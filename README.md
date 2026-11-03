@@ -1,11 +1,21 @@
-<div align="center">
+# Sarmelle — Premium Women's Ethnic Wear E-Commerce Platform
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+Sarmelle (`sarmelle.com`) is a luxury women's ethnic-wear e-commerce brand offering exquisite sarees, kurtis, lehengas, dupattas, and festive collections.
 
-  <h1>Built with AI Studio</h2>
+## Technology Stack
+- **Frontend:** HTML5, Tailwind CSS, Vanilla JavaScript (compiled/optimized for production).
+- **Backend:** PHP 8.x (Modular Monolith).
+- **Database:** MySQL / MariaDB (hosted via Hostinger / XAMPP local).
+- **Hosting:** Hostinger Premium Shared Hosting.
+- **Development Tooling:** Vite (dev mode only for rapid UI prototyping and Tailwind compilation).
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+## Project Structure
+- `/public/` — Static assets, uploaded product images, and brand imagery.
+- `/src/` — Frontend source files, components, and Tailwind styles.
+- `/api/` — PHP backend scripts and service adapters (Milestone 3+).
+- `/database/` — SQL migration scripts and seed data.
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
-
-</div>
+## Local Development & Preview Instructions
+1. Ensure XAMPP Apache and MySQL are running.
+2. Clone repository into your local XAMPP `htdocs` folder (or run Vite dev server for frontend preview).
+3. Follow `OPERATIONS.md` for detailed environment setup.
