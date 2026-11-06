@@ -13,25 +13,11 @@ import {
   ArrowLeft, Download, BadgeCheck, ArrowUpDown, LogIn, MapPin, Calendar, FileText, AlertCircle, KeyRound
 } from 'lucide-react';
 
-interface Product {
-  id: number;
-  name: string;
-  category: string;
-  price: number;
-  originalPrice: number;
-  discount: number;
-  rating: number;
-  reviewsCount: number;
-  image: string;
-  images: string[];
-  colors: { name: string; hex: string }[];
-  sizes: string[];
-  inStock: boolean;
-  offerType: string;
-  fabric: string;
-  isBestSeller?: boolean;
-  isNewArrival?: boolean;
-}
+import type { Product, ProductReview } from './types/product';
+import type { HeroSlide, PromoBanner, FeaturedBlock, LookbookConfig } from './types/campaign';
+import type { UserOrderItem, UserOrder, UserReturn } from './types/order';
+
+export type { Product, ProductReview, HeroSlide, PromoBanner, FeaturedBlock, LookbookConfig, UserOrderItem, UserOrder, UserReturn };
 
 const SAMPLE_PRODUCTS: Product[] = [
   {
@@ -373,60 +359,6 @@ const SAMPLE_PRODUCTS: Product[] = [
   }
 ];
 
-export interface HeroSlide {
-  id: number;
-  badge?: string;
-  titlePart1: string;
-  titlePart2: string;
-  subtitle: string;
-  offerTag?: string;
-  ctaTextDesktop: string;
-  ctaTextMobile: string;
-  categoryTarget?: string;
-  offerTarget?: string;
-  desktopImage: string;
-  mobileImage: string;
-  active: boolean;
-}
-
-export interface PromoBanner {
-  id: number;
-  badge: string;
-  title: string;
-  subtitle: string;
-  ctaText: string;
-  image: string;
-  targetCategory?: string;
-  targetOffer?: string;
-}
-
-export interface FeaturedBlock {
-  id: number;
-  title: string;
-  ctaText: string;
-  image: string;
-  category: string;
-}
-
-export interface LookbookConfig {
-  title: string;
-  subtitle: string;
-  ctaText: string;
-  image: string;
-  offerTarget: string;
-}
-
-export interface ProductReview {
-  id: number;
-  author: string;
-  rating: number;
-  date: string;
-  title: string;
-  comment: string;
-  verified: boolean;
-  location: string;
-}
-
 export const SAMPLE_REVIEWS: ProductReview[] = [
   {
     id: 1,
@@ -623,48 +555,6 @@ export const DEFAULT_LOOKBOOK: LookbookConfig = {
   image: "https://images.unsplash.com/photo-1610030469983-98e550d6193c?auto=format&fit=crop&w=1200&q=85",
   offerTarget: "Diwali Sale"
 };
-
-export interface UserOrderItem {
-  name: string;
-  image: string;
-  size: string;
-  color: string;
-  price: number;
-  quantity: number;
-}
-
-export interface UserOrder {
-  id: string;
-  orderNumber: string;
-  date: string;
-  totalAmount: number;
-  status: 'In Transit' | 'Delivered' | 'Confirmed';
-  trackingNumber: string;
-  carrier: string;
-  estimatedDelivery?: string;
-  deliveredDate?: string;
-  canReturn: boolean;
-  items: UserOrderItem[];
-}
-
-export interface UserReturn {
-  id: string;
-  returnNumber: string;
-  orderNumber: string;
-  date: string;
-  status: 'Initiated Return' | 'In Inspection' | 'Refund Processed';
-  type: 'Exchange' | 'Return';
-  reason: string;
-  refundAmount?: number;
-  refundNote: string;
-  item: {
-    name: string;
-    image: string;
-    size: string;
-    color: string;
-    price: number;
-  };
-}
 
 export const SAMPLE_USER_ORDERS: UserOrder[] = [
   {
