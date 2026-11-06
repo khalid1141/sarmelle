@@ -1,24 +1,43 @@
 # Sarmelle E-Commerce Platform — Project Roadmap & TODO
 
+## Architecture Decisions (Option B Confirmed)
+- **Frontend & Build:** React 19 + TypeScript + Vite 8 + Tailwind CSS v4 built to static files (`dist/`).
+- **Backend:** PHP 8.2+ REST API endpoints under `/api/` with PDO prepared statements and MySQL database (`sarmelle_db`).
+- **Production Server:** Hostinger Premium Shared Hosting with Apache/LiteSpeed. Strictly **no Node.js process** runs on the server in production.
+- **Base Path:** Vite `base` stays `'/'` (storefront lives at domain root; do not use `'./'`).
+- **Payments:** Razorpay, **UPI ONLY** (Google Pay, PhonePe, Paytm, custom UPI ID). No credit/debit cards, no NetBanking, and no Cash on Delivery (COD).
+- **Product Slugs & SEO:** Slugs are auto-generated from product names, locked after publish, with redirects from old slugs. Product pages get PHP-injected SEO and Open Graph tags, an auto-generated sitemap, and robots.txt.
+- **Dependency Hygiene:** `esbuild` devDependency was removed to fix an npm `ERESOLVE` peer dependency conflict, and `package-lock.json` was generated and committed.
+
+---
+
 ## Milestone 0 — Environment and Git setup [COMPLETED]
 - [x] Resolve XAMPP MySQL port 3306 conflict and verify XAMPP Apache/MySQL startup.
 - [x] Initialize Git repository structure and documentation framework.
-- [ ] Create private GitHub repository and link local workspace.
+- [x] Create private GitHub repository and link local workspace.
 
 ## Milestone 1 — UI First (Frontend Storefront Prototype) [COMPLETED]
 - [x] Build responsive Homepage based on Sarmelle Diwali Festive Collection reference (`/public/assets/aistudio/Sarmelle_Festive_Fashion_Homepage_edb12098.png`).
-- [x] Build Cart drawer with free shipping progress bar, quantity counters, coupon code engine (`DIWALI30`, `WELCOME10`, `FESTIVE500`), and full 4-step Checkout Stepper (Address -> Flat ₹50 Shipping -> UPI/Card/NetBanking/COD Payment -> Order Confirmation & Invoice).
+- [x] Build Cart drawer with free shipping progress bar, quantity counters, coupon code engine (`DIWALI30`, `WELCOME10`, `FESTIVE500`), and full 4-step Checkout Stepper.
 - [x] Build Category & Collection pages with multi-faceted filters (Fabric, Color palette, Category, Offer, Price budget slider), active filter chips, mobile filter drawer, and 6 sorting modes.
 - [x] Build Customer login/registration/account UI with Profile management, simple Password Change dialog, single-line Order status cards, and self-ship Return/Exchange initiation flow.
 - [x] Build Admin Dashboard UI prototype for campaign banners and product catalogue editing.
 - [x] Complete comprehensive pre-backend audit on tech stack, Hostinger compatibility, mock data boundaries, and architectural security.
-- [x] **Audit Checkpoint:** Awaiting user approval on audit findings before beginning Milestone 2.
+- [x] Establish reproducible build baseline: resolved `esbuild` peer dependency conflict and committed `package-lock.json`.
 
-## Milestone 2 — Architecture and Database Design [AWAITING USER APPROVAL]
+## Milestone 2 — Architecture, Refactoring & Setup [IN PROGRESS]
+- [x] Extraction Step 1 (Types): Extract TypeScript interfaces to `src/types/` (`product.ts`, `campaign.ts`, `order.ts`).
+- [x] Extraction Step 2 (Mock Data): Extract mock arrays to `src/data/` (`products.ts`, `reviews.ts`, `campaign.ts`, `orders.ts`).
+- [ ] Finish App.tsx split (Steps 3 to 8), merge to main after a manual click-through.
+- [ ] Checkout polish: UPI only, remove cards, NetBanking, COD and the "address type" field.
+- [ ] Remove unused packages (@google/genai, express, tsx, dotenv) after verifying nothing uses them.
+- [ ] Add real routing and product/category URLs.
+- [ ] Separate admin code from the public storefront bundle.
+- [ ] Confirm Razorpay account activation requirements early.
 - [ ] Define modular PHP backend structure and security boundaries under `/api/`.
 - [ ] Design complete MySQL schema (`sarmelle_db` tables: products, variants, categories, customers, addresses, orders, order items, inventory movements, payments, coupons, campaigns, audit logs).
 - [ ] Document database relationships, indexes, and test seeding strategy in `DATABASE.md`.
-- [ ] **Review checkpoint:** Request user approval before code implementation.
+- [ ] **Review checkpoint:** Request user approval before backend code implementation.
 
 ## Milestone 3 — Backend Foundation
 - [ ] Database connection class (PDO with prepared statements & error handling).
@@ -31,7 +50,7 @@
 - [ ] Persistent cart and checkout server-side recalculation (preventing client price tampering).
 - [ ] Inventory locking, transactions, and overselling prevention.
 - [ ] Order placement flow -> Awaiting Owner Stock Review status.
-- [ ] Payment gateway integration (Razorpay/Cashfree sandbox mode, webhook verification, idempotency).
+- [ ] Payment gateway integration (Razorpay sandbox mode, UPI ONLY, webhook signature verification, idempotency).
 - [ ] Order acceptance, rejection, and refund workflows.
 - [ ] Courier shipping tracking and notification adapters.
 
