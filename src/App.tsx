@@ -76,6 +76,7 @@ export default function App() {
   const [activeTrackingOrder, setActiveTrackingOrder] = useState<UserOrder | null>(null);
   const [returnModalItem, setReturnModalItem] = useState<{ order: UserOrder; item: UserOrderItem } | null>(null);
   const [accountNotice, setAccountNotice] = useState<string | null>(null);
+  const [wishlistNotice, setWishlistNotice] = useState<string | null>(null);
   const [ordersSubFilter, setOrdersSubFilter] = useState<'all' | 'returns'>('all');
 
   // Simple Change Password Dialog States (Old pass, new pass, confirm new pass)
@@ -359,6 +360,14 @@ export default function App() {
         ? prev.filter(item => item.id !== product.id) 
         : [...prev, product]
     );
+  };
+
+  const moveWishlistItemToBag = (product: Product) => {
+    addToCart(product);
+    setWishlist(prev => prev.filter(item => item.id !== product.id));
+    setWishlistOpen(false);
+    setWishlistNotice('Moved to bag');
+    setTimeout(() => setWishlistNotice(null), 2500);
   };
 
   const filteredProducts = SAMPLE_PRODUCTS.filter(p => {
@@ -3887,9 +3896,17 @@ export default function App() {
         isOpen={wishlistOpen}
         onClose={() => setWishlistOpen(false)}
         wishlist={wishlist}
-        onAddToBag={addToCart}
+        onAddToBag={moveWishlistItemToBag}
         onRemove={toggleWishlist}
       />
+
+      {/* ================= WISHLIST TO BAG NOTICE ================= */}
+      {wishlistNotice && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] bg-[#141414] border border-[#D4AF37]/50 text-[#F3E5AB] px-5 py-3 rounded-xl shadow-2xl text-xs flex items-center gap-2 animate-in fade-in duration-200">
+          <ShoppingBag className="w-4 h-4 text-[#D4AF37]" />
+          <span>{wishlistNotice}</span>
+        </div>
+      )}
 
       {/* ================= AUTH MODAL (LOGIN & REGISTER) ================= */}
       <AuthModal
