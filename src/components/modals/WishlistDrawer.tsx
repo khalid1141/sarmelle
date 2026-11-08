@@ -30,7 +30,7 @@ export default function WishlistDrawer({
             <X className="w-6 h-6" />
           </button>
         </div>
-        <div className="flex-grow overflow-y-auto py-4 space-y-4">
+        <div className="flex-grow overflow-y-auto py-4 space-y-4 thin-scroll">
           {wishlist.length === 0 ? (
             <p className="text-gray-400 text-center py-20">Your wishlist is empty.</p>
           ) : (

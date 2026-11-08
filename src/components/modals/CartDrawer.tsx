@@ -84,7 +84,7 @@ export default function CartDrawer({
         )}
 
         {/* Items List */}
-        <div className="flex-grow overflow-y-auto py-2 space-y-3.5 pr-1">
+        <div className="flex-grow overflow-y-auto py-2 space-y-3.5 pr-1 thin-scroll">
           {cart.length === 0 ? (
             <div className="text-center py-20 space-y-4">
               <div className="w-16 h-16 rounded-full bg-[#1A1A1A] border border-[#D4AF37]/30 flex items-center justify-center mx-auto text-[#D4AF37]">
