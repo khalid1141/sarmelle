@@ -16,6 +16,7 @@ import {
 import type { Product, ProductReview } from './types/product';
 import type { HeroSlide, PromoBanner, FeaturedBlock, LookbookConfig } from './types/campaign';
 import type { UserOrderItem, UserOrder, UserReturn } from './types/order';
+import type { CartItem, AppliedCoupon } from './types/cart';
 
 export type { Product, ProductReview, HeroSlide, PromoBanner, FeaturedBlock, LookbookConfig, UserOrderItem, UserOrder, UserReturn };
 
@@ -194,7 +195,7 @@ export default function App() {
   };
   
   // Cart & Wishlist state
-  const [cart, setCart] = useState<{ product: Product; quantity: number; selectedSize: string; selectedColor: string }[]>([
+  const [cart, setCart] = useState<CartItem[]>([
     { product: SAMPLE_PRODUCTS[0], quantity: 1, selectedSize: 'Free Size', selectedColor: 'Maroon' },
     { product: SAMPLE_PRODUCTS[2], quantity: 1, selectedSize: 'M', selectedColor: 'Rose Pink' }
   ]);
@@ -219,7 +220,7 @@ export default function App() {
 
   // Coupon state
   const [couponInput, setCouponInput] = useState('');
-  const [appliedCoupon, setAppliedCoupon] = useState<{ code: string; discountPercent: number; discountAmount?: number } | null>({
+  const [appliedCoupon, setAppliedCoupon] = useState<AppliedCoupon | null>({
     code: 'DIWALI30',
     discountPercent: 30
   });

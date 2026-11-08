@@ -1,19 +1,6 @@
 import React from 'react';
 import { ShoppingBag, X, Truck, Minus, Plus, Trash2, Tag, Check, Lock } from 'lucide-react';
-import type { Product } from '../../types/product';
-
-interface CartItem {
-  product: Product;
-  quantity: number;
-  selectedSize: string;
-  selectedColor: string;
-}
-
-interface AppliedCoupon {
-  code: string;
-  discountPercent: number;
-  discountAmount?: number;
-}
+import type { CartItem, AppliedCoupon } from '../../types/cart';
 
 interface CartDrawerProps {
   isOpen: boolean;
