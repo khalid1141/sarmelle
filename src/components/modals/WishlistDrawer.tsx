@@ -7,13 +7,15 @@ interface WishlistDrawerProps {
   onClose: () => void;
   wishlist: Product[];
   onAddToBag: (product: Product) => void;
+  onRemove: (product: Product) => void;
 }
 
 export default function WishlistDrawer({
   isOpen,
   onClose,
   wishlist,
-  onAddToBag
+  onAddToBag,
+  onRemove
 }: WishlistDrawerProps) {
   if (!isOpen) return null;
 
@@ -41,6 +43,13 @@ export default function WishlistDrawer({
                 </div>
                 <button onClick={() => onAddToBag(product)} className="bg-[#D4AF37] text-black text-xs font-bold px-3 py-1.5 rounded">
                   Add
+                </button>
+                <button
+                  onClick={() => onRemove(product)}
+                  aria-label={"Remove " + product.name + " from wishlist"}
+                  className="text-gray-500 hover:text-white p-1 rounded-lg hover:bg-white/5 transition-colors cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
                 </button>
               </div>
             ))

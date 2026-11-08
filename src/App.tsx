@@ -4060,6 +4060,7 @@ export default function App() {
         onClose={() => setWishlistOpen(false)}
         wishlist={wishlist}
         onAddToBag={addToCart}
+        onRemove={toggleWishlist}
       />
 
       {/* ================= AUTH MODAL (LOGIN & REGISTER) ================= */}
