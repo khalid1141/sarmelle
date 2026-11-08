@@ -21,6 +21,7 @@ export type { Product, ProductReview, HeroSlide, PromoBanner, FeaturedBlock, Loo
 
 import SizeChartModal from './components/modals/SizeChartModal';
 import ReviewsModal from './components/modals/ReviewsModal';
+import ChangePasswordModal from './components/modals/ChangePasswordModal';
 import { SAMPLE_PRODUCTS } from './data/products';
 import { SAMPLE_REVIEWS } from './data/reviews';
 import { SAMPLE_HERO_SLIDES, SAMPLE_PROMO_BANNERS, SAMPLE_FEATURED_BLOCKS, DEFAULT_LOOKBOOK } from './data/campaign';
@@ -75,10 +76,6 @@ export default function App() {
 
   // Simple Change Password Dialog States (Old pass, new pass, confirm new pass)
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
-  const [oldPasswordInput, setOldPasswordInput] = useState('');
-  const [newPasswordInput, setNewPasswordInput] = useState('');
-  const [confirmPasswordInput, setConfirmPasswordInput] = useState('');
-  const [passwordChangeError, setPasswordChangeError] = useState('');
 
   const [userProfile, setUserProfile] = useState({
     fullName: 'Priya Sharma',
@@ -2375,13 +2372,7 @@ export default function App() {
                         <span className="text-gray-500 uppercase tracking-wider block text-[10px] mb-1">Password Security</span>
                         <button
                           type="button"
-                          onClick={() => {
-                            setOldPasswordInput('');
-                            setNewPasswordInput('');
-                            setConfirmPasswordInput('');
-                            setPasswordChangeError('');
-                            setIsChangePasswordOpen(true);
-                          }}
+                          onClick={() => setIsChangePasswordOpen(true)}
                           className="px-3 py-1 rounded-md border border-[#D4AF37]/50 bg-[#161616] text-[#D4AF37] hover:bg-[#D4AF37]/15 text-xs font-semibold inline-flex items-center gap-1.5 transition-all cursor-pointer shadow-sm"
                         >
                           <KeyRound className="w-3 h-3" /> Change
@@ -4468,125 +4459,14 @@ export default function App() {
       )}
 
       {/* ================= SIMPLE CHANGE PASSWORD MODAL ================= */}
-      {isChangePasswordOpen && (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 sm:p-6 animate-in fade-in duration-200 select-none">
-          <div className="bg-[#121212] border border-[#D4AF37]/40 max-w-md w-full rounded-2xl shadow-2xl overflow-hidden flex flex-col">
-            {/* Header */}
-            <div className="p-5 border-b border-[#D4AF37]/25 flex justify-between items-center bg-[#171717]">
-              <div>
-                <span className="text-[10px] text-[#D4AF37] uppercase tracking-wider font-semibold block">Security & Credentials</span>
-                <h3 className="text-lg font-serif font-bold text-white mt-0.5 flex items-center gap-2">
-                  <KeyRound className="w-5 h-5 text-[#D4AF37]" /> Change Password
-                </h3>
-              </div>
-              <button 
-                onClick={() => {
-                  setIsChangePasswordOpen(false);
-                  setPasswordChangeError('');
-                  setOldPasswordInput('');
-                  setNewPasswordInput('');
-                  setConfirmPasswordInput('');
-                }}
-                className="text-gray-400 hover:text-white p-1 rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Form */}
-            <form 
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (!oldPasswordInput.trim()) {
-                  setPasswordChangeError('Please enter your current password.');
-                  return;
-                }
-                if (newPasswordInput.length < 6) {
-                  setPasswordChangeError('New password must be at least 6 characters long.');
-                  return;
-                }
-                if (newPasswordInput !== confirmPasswordInput) {
-                  setPasswordChangeError('New password and confirm password do not match.');
-                  return;
-                }
-                setIsChangePasswordOpen(false);
-                setOldPasswordInput('');
-                setNewPasswordInput('');
-                setConfirmPasswordInput('');
-                setPasswordChangeError('');
-                setAccountNotice('Your account password has been updated successfully.');
-                setTimeout(() => setAccountNotice(null), 5000);
-              }}
-              className="p-5 sm:p-6 space-y-4 text-xs"
-            >
-              {passwordChangeError && (
-                <div className="p-3 bg-red-950/60 border border-red-500/50 rounded-xl text-red-300 text-xs flex items-center gap-2">
-                  <AlertCircle className="w-4 h-4 shrink-0 text-red-400" />
-                  <span>{passwordChangeError}</span>
-                </div>
-              )}
-
-              <div className="space-y-1.5">
-                <label className="text-gray-300 font-semibold block uppercase tracking-wider text-[11px]">Old Password</label>
-                <input
-                  type="password"
-                  placeholder="Enter current password"
-                  value={oldPasswordInput}
-                  onChange={(e) => { setOldPasswordInput(e.target.value); setPasswordChangeError(''); }}
-                  required
-                  className="w-full bg-black border border-gray-700 focus:border-[#D4AF37] rounded-lg p-2.5 text-white outline-none text-xs"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-gray-300 font-semibold block uppercase tracking-wider text-[11px]">New Password</label>
-                <input
-                  type="password"
-                  placeholder="Enter new password (min. 6 characters)"
-                  value={newPasswordInput}
-                  onChange={(e) => { setNewPasswordInput(e.target.value); setPasswordChangeError(''); }}
-                  required
-                  className="w-full bg-black border border-gray-700 focus:border-[#D4AF37] rounded-lg p-2.5 text-white outline-none text-xs"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-gray-300 font-semibold block uppercase tracking-wider text-[11px]">Confirm New Password</label>
-                <input
-                  type="password"
-                  placeholder="Confirm new password"
-                  value={confirmPasswordInput}
-                  onChange={(e) => { setConfirmPasswordInput(e.target.value); setPasswordChangeError(''); }}
-                  required
-                  className="w-full bg-black border border-gray-700 focus:border-[#D4AF37] rounded-lg p-2.5 text-white outline-none text-xs"
-                />
-              </div>
-
-              <div className="pt-2 flex justify-end gap-3 border-t border-gray-800">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsChangePasswordOpen(false);
-                    setPasswordChangeError('');
-                    setOldPasswordInput('');
-                    setNewPasswordInput('');
-                    setConfirmPasswordInput('');
-                  }}
-                  className="px-4 py-2 border border-gray-700 text-gray-300 hover:text-white rounded-lg text-xs cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-6 py-2 bg-gradient-to-r from-[#D4AF37] to-[#AA771C] text-black font-bold rounded-lg text-xs hover:brightness-110 transition-all cursor-pointer shadow-lg"
-                >
-                  Update Password
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      <ChangePasswordModal 
+        isOpen={isChangePasswordOpen} 
+        onClose={() => setIsChangePasswordOpen(false)} 
+        onSuccess={(msg) => {
+          setAccountNotice(msg);
+          setTimeout(() => setAccountNotice(null), 5000);
+        }} 
+      />
 
       {/* ================= INITIATE RETURN / EXCHANGE MODAL ================= */}
       {returnModalItem && (
