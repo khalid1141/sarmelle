@@ -1,5 +1,5 @@
 import React from 'react';
-import { Heart, X } from 'lucide-react';
+import { Heart, X, ShoppingBag, Trash2 } from 'lucide-react';
 import type { Product } from '../../types/product';
 
 interface WishlistDrawerProps {
@@ -35,21 +35,24 @@ export default function WishlistDrawer({
             <p className="text-gray-400 text-center py-20">Your wishlist is empty.</p>
           ) : (
             wishlist.map(product => (
-              <div key={product.id} className="flex gap-4 bg-[#1A1A1A] border border-[#D4AF37]/20 p-3 rounded-lg items-center">
-                <img src={product.image} alt={product.name} className="w-16 h-20 object-cover rounded" />
-                <div className="flex-grow">
-                  <h4 className="text-white font-medium text-sm">{product.name}</h4>
+              <div key={product.id} className="flex gap-3 bg-[#1A1A1A] border border-[#D4AF37]/20 p-3 rounded-lg items-start">
+                <img src={product.image} alt={product.name} className="w-16 h-20 object-cover rounded shrink-0" />
+                <div className="flex-grow min-w-0">
+                  <h4 className="text-white font-medium text-sm truncate">{product.name}</h4>
                   <p className="text-xs text-amber-400 font-semibold mt-1">₹{product.price.toLocaleString('en-IN')}</p>
+                  <button
+                    onClick={() => onAddToBag(product)}
+                    className="mt-2 w-full bg-[#D4AF37] hover:bg-[#E5C158] text-black font-bold text-[9px] sm:text-[10px] py-1.5 rounded-md transition-colors shadow tracking-wider uppercase flex items-center justify-center gap-1 cursor-pointer"
+                  >
+                    <ShoppingBag className="w-3 h-3" /> ADD TO CART
+                  </button>
                 </div>
-                <button onClick={() => onAddToBag(product)} className="bg-[#D4AF37] text-black text-xs font-bold px-3 py-1.5 rounded">
-                  Add
-                </button>
                 <button
                   onClick={() => onRemove(product)}
                   aria-label={"Remove " + product.name + " from wishlist"}
-                  className="text-gray-500 hover:text-white p-1 rounded-lg hover:bg-white/5 transition-colors cursor-pointer"
+                  className="text-gray-500 hover:text-rose-400 p-1.5 rounded-lg hover:bg-rose-950/30 transition-colors cursor-pointer self-start"
                 >
-                  <X className="w-4 h-4" />
+                  <Trash2 className="w-4 h-4" />
                 </button>
               </div>
             ))
