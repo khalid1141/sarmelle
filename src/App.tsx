@@ -29,6 +29,7 @@ import ReturnModal from './components/modals/ReturnModal';
 import CheckoutModal from './components/modals/CheckoutModal';
 import Footer from './components/common/Footer';
 import Header from './components/common/Header';
+import MobileNav from './components/common/MobileNav';
 import ReviewsModal from './components/modals/ReviewsModal';
 import ChangePasswordModal from './components/modals/ChangePasswordModal';
 import { SAMPLE_PRODUCTS } from './data/products';
@@ -422,6 +423,23 @@ export default function App() {
         onLogin={() => setAuthModalOpen(true)}
         onOpenWishlist={() => setWishlistOpen(true)}
         onOpenCart={() => setCartOpen(true)}
+      />
+
+      {/* ================= MOBILE NAVIGATION DRAWER ================= */}
+      <MobileNav
+        isOpen={mobileMenuOpen}
+        isLoggedIn={isLoggedIn}
+        onClose={() => setMobileMenuOpen(false)}
+        onNavHome={() => setCurrentView('home')}
+        onNavCategory={(category) => { setSelectedCategory(category); setCurrentView('collection'); }}
+        onNavFestive={() => { setSelectedOfferType('New Festive Collection'); setCurrentView('collection'); }}
+        onNavDiwaliSale={() => { setSelectedOfferType('Diwali Sale'); setCurrentView('collection'); }}
+        onAccountTab={(tab) => { setIsLoggedIn(true); setAccountTab(tab); setCurrentView('account'); }}
+        onLogout={() => {
+          setIsLoggedIn(false);
+          if (currentView === 'account') setCurrentView('home');
+        }}
+        onLogin={() => setAuthModalOpen(true)}
       />
 
       {/* ================= VIEW 1: HOMEPAGE ================= */}
