@@ -6,6 +6,7 @@ interface HeaderProps {
   selectedCategory: string;
   selectedOfferType: string;
   isLoggedIn: boolean;
+  userName: string;
   wishlistCount: number;
   cartCount: number;
   onOpenMobileMenu: () => void;
@@ -29,6 +30,7 @@ export default function Header({
   selectedCategory,
   selectedOfferType,
   isLoggedIn,
+  userName,
   wishlistCount,
   cartCount,
   onOpenMobileMenu,
@@ -136,7 +138,7 @@ export default function Header({
                   title="My Account Dashboard"
                 >
                   <User className="w-4 h-4 text-[#D4AF37]" />
-                  <span>Priya (Account)</span>
+                  <span className="max-w-[130px] truncate">{userName}</span>
                 </button>
                 <button
                   onClick={onLogout}

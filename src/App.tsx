@@ -356,6 +356,7 @@ export default function App() {
         selectedCategory={selectedCategory}
         selectedOfferType={selectedOfferType}
         isLoggedIn={isLoggedIn}
+        userName={userProfile.fullName.split(' ')[0]}
         wishlistCount={wishlist.length}
         cartCount={cart.reduce((acc, item) => acc + item.quantity, 0)}
         onOpenMobileMenu={() => setMobileMenuOpen(true)}
