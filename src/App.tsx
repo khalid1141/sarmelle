@@ -183,6 +183,8 @@ export default function App() {
   
   // Checkout Modal Open State
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
+  // Set when a logged-out user tries to check out, so checkout opens after login
+  const [checkoutAfterAuth, setCheckoutAfterAuth] = useState(false);
   const shippingCharge = 50; // Flat ₹50 per order policy
   const cartFinalTotal = Math.max(0, cartSubtotal - couponDiscount + shippingCharge);
 
@@ -441,6 +443,11 @@ export default function App() {
         finalTotal={cartFinalTotal}
         onStartCheckout={() => {
           setCartOpen(false);
+          if (!isLoggedIn) {
+            setCheckoutAfterAuth(true);
+            setAuthModalOpen(true);
+            return;
+          }
           setIsCheckoutOpen(true);
         }}
         onExploreCollection={() => {
@@ -458,7 +465,6 @@ export default function App() {
         isFreeShippingEligible={isFreeShippingEligible}
         onOrderPlaced={(order) => {
           setUserOrders(prev => [order, ...prev]);
-          setIsLoggedIn(true);
         }}
         onContinueShopping={() => {
           setCart([]);
@@ -487,10 +493,17 @@ export default function App() {
       {/* ================= AUTH MODAL (LOGIN & REGISTER) ================= */}
       <AuthModal
         isOpen={authModalOpen}
-        onClose={() => setAuthModalOpen(false)}
+        onClose={() => {
+          setAuthModalOpen(false);
+          setCheckoutAfterAuth(false);
+        }}
         onAuthenticated={() => {
           setIsLoggedIn(true);
           setAuthModalOpen(false);
+          if (checkoutAfterAuth) {
+            setCheckoutAfterAuth(false);
+            setIsCheckoutOpen(true);
+          }
         }}
       />
 
