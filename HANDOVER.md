@@ -4,6 +4,15 @@
 - **Active Branch:** `refactor/split-app`
 - **Milestone:** Milestone 2 (Architecture, Refactoring & Setup) — In Progress.
 - **Architecture Option Confirmed:** **Option B** — React 19 + TypeScript + Vite 8 + Tailwind CSS v4 built to static files, with a modular PHP 8.2+ / MySQL backend. No Node.js runtime on Hostinger in production.
+- **Step 7C [COMPLETED]:** ProductDetailView, AccountView and AdminView extracted (`f7e2732`, `4d9dfc5`, `82bc893`); `currentView` render guards for HomeView and CollectionView restored in `3e53375`.
+- **Cleanup [COMPLETED]:** Unused lucide-react icon imports and the dead `activeFilterCount` / `hasActiveFilters` helpers removed from App.tsx (`5a3b4fd`). `src/App.tsx` is now **591 lines** (from 5,770 at the start of Milestone 2).
+- **Folder layout:**
+  - `src/types/` — `product.ts`, `campaign.ts`, `order.ts`, `cart.ts`
+  - `src/data/` — `products.ts`, `reviews.ts`, `campaign.ts`, `orders.ts`
+  - `src/components/modals/` — `SizeChartModal`, `ReviewsModal`, `ChangePasswordModal`, `WishlistDrawer`, `CartDrawer`, `AuthModal`, `OrderTrackingModal`, `ReturnModal`, `CheckoutModal`
+  - `src/components/common/` — `Header`, `Footer`, `MobileNav`
+  - `src/components/views/` — `HomeView`, `CollectionView`, `ProductDetailView`, `AccountView`, `AdminView`
+- **Tool rotation rule:** One agent works in this repository at a time. Before switching tools/agents, the working tree must be clean (only the untracked `MILESTONE2_ASSESSMENT.md/.doc` may be present), and every new prompt must open with the preamble: read `HANDOVER.md` and `TODO.md`, run `git status`, and confirm the expected branch/HEAD.
 
 ---
 
@@ -33,7 +42,7 @@
 ---
 
 ## Immediate Next Steps (in priority order)
-1. **Finish App.tsx split (Steps 3 to 8):** Extract modals, context providers, layout header/footer, and view pages; merge into `main` after complete manual click-through.
+1. **Complete Milestone 2 split:** The App.tsx split (Steps 1–8) is finished; run the full manual click-through on `refactor/split-app`, then merge into `main`.
 2. **Checkout polish:** Restrict payment step to UPI only; remove cards, NetBanking, COD, and the "address type" field.
 3. **Prune unused packages:** Remove `@google/genai`, `express`, `tsx`, and `dotenv` after verifying zero imports.
 4. **Routing & URLs:** Implement real client routing with clean product/category URLs.
