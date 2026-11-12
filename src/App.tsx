@@ -337,48 +337,52 @@ export default function App() {
       />
 
       {/* ================= VIEW 1: HOMEPAGE ================= */}
-      <HomeView
-        heroSlides={heroSlides}
-        promoBanners={promoBanners}
-        featuredBlocks={featuredBlocks}
-        lookbookBanner={lookbookBanner}
-        productsList={productsList}
-        wishlist={wishlist}
-        addToCart={addToCart}
-        toggleWishlist={toggleWishlist}
-        onSelectProduct={(product) => { setSelectedProduct(product); setCurrentView('product'); }}
-        onNavCategoryOffer={(category, offer) => { if (category) setSelectedCategory(category); if (offer) setSelectedOfferType(offer); setCurrentView('collection'); }}
-        onNavCategory={(category) => { setSelectedCategory(category); setCurrentView('collection'); }}
-        onShopOffer={(offer) => { if (offer) setSelectedOfferType(offer); setCurrentView('collection'); }}
-      />
+      {currentView === 'home' && (
+        <HomeView
+          heroSlides={heroSlides}
+          promoBanners={promoBanners}
+          featuredBlocks={featuredBlocks}
+          lookbookBanner={lookbookBanner}
+          productsList={productsList}
+          wishlist={wishlist}
+          addToCart={addToCart}
+          toggleWishlist={toggleWishlist}
+          onSelectProduct={(product) => { setSelectedProduct(product); setCurrentView('product'); }}
+          onNavCategoryOffer={(category, offer) => { if (category) setSelectedCategory(category); if (offer) setSelectedOfferType(offer); setCurrentView('collection'); }}
+          onNavCategory={(category) => { setSelectedCategory(category); setCurrentView('collection'); }}
+          onShopOffer={(offer) => { if (offer) setSelectedOfferType(offer); setCurrentView('collection'); }}
+        />
+      )}
 
       {/* ================= VIEW 2: COLLECTION PAGE ================= */}
-      <CollectionView
-        selectedCategory={selectedCategory}
-        setSelectedCategory={setSelectedCategory}
-        selectedOfferType={selectedOfferType}
-        setSelectedOfferType={setSelectedOfferType}
-        selectedFabric={selectedFabric}
-        setSelectedFabric={setSelectedFabric}
-        selectedColorFilter={selectedColorFilter}
-        setSelectedColorFilter={setSelectedColorFilter}
-        maxPrice={maxPrice}
-        setMaxPrice={setMaxPrice}
-        sortBy={sortBy}
-        setSortBy={setSortBy}
-        filteredProducts={filteredProducts}
-        resetAllFilters={resetAllFilters}
-        visibleProductsCount={visibleProductsCount}
-        setVisibleProductsCount={setVisibleProductsCount}
-        isLoadingMore={isLoadingMore}
-        setIsLoadingMore={setIsLoadingMore}
-        scrollSentinelRef={scrollSentinelRef}
-        wishlist={wishlist}
-        addToCart={addToCart}
-        toggleWishlist={toggleWishlist}
-        onSelectProduct={(product) => { setSelectedProduct(product); setCurrentView('product'); }}
-        onNavHome={() => setCurrentView('home')}
-      />
+      {currentView === 'collection' && (
+        <CollectionView
+          selectedCategory={selectedCategory}
+          setSelectedCategory={setSelectedCategory}
+          selectedOfferType={selectedOfferType}
+          setSelectedOfferType={setSelectedOfferType}
+          selectedFabric={selectedFabric}
+          setSelectedFabric={setSelectedFabric}
+          selectedColorFilter={selectedColorFilter}
+          setSelectedColorFilter={setSelectedColorFilter}
+          maxPrice={maxPrice}
+          setMaxPrice={setMaxPrice}
+          sortBy={sortBy}
+          setSortBy={setSortBy}
+          filteredProducts={filteredProducts}
+          resetAllFilters={resetAllFilters}
+          visibleProductsCount={visibleProductsCount}
+          setVisibleProductsCount={setVisibleProductsCount}
+          isLoadingMore={isLoadingMore}
+          setIsLoadingMore={setIsLoadingMore}
+          scrollSentinelRef={scrollSentinelRef}
+          wishlist={wishlist}
+          addToCart={addToCart}
+          toggleWishlist={toggleWishlist}
+          onSelectProduct={(product) => { setSelectedProduct(product); setCurrentView('product'); }}
+          onNavHome={() => setCurrentView('home')}
+        />
+      )}
 
       {/* ================= VIEW 3: PRODUCT DETAIL PAGE ================= */}
       {currentView === 'product' && (
