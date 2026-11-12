@@ -1,4 +1,4 @@
-import React, { useLayoutEffect, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useState } from 'react';
 import {
   ShieldCheck, X, Truck, Clock, CreditCard, CheckCircle2, Check,
   ArrowRight, Lock, ArrowLeft, QrCode, Download
@@ -14,6 +14,7 @@ interface CheckoutModalProps {
   isFreeShippingEligible: boolean;
   onOrderPlaced: (order: UserOrder) => void;
   onContinueShopping: () => void;
+  onBackToCart: () => void;
 }
 
 export default function CheckoutModal({
@@ -23,10 +24,12 @@ export default function CheckoutModal({
   cartFinalTotal,
   isFreeShippingEligible,
   onOrderPlaced,
-  onContinueShopping
+  onContinueShopping,
+  onBackToCart
 }: CheckoutModalProps) {
   const [checkoutStep, setCheckoutStep] = useState<1 | 2 | 3 | 4>(1);
   const [shippingMethod, setShippingMethod] = useState<'standard' | 'express'>('standard');
+  const [paymentSecondsLeft, setPaymentSecondsLeft] = useState<number>(480);
 
   const [deliveryAddress, setDeliveryAddress] = useState({
     fullName: 'Pooja Sharma',
@@ -50,8 +53,24 @@ export default function CheckoutModal({
 
   // Opening checkout always starts at step 1, matching the previous App-level reset.
   useLayoutEffect(() => {
-    if (isOpen) setCheckoutStep(1);
+    if (isOpen) {
+      setCheckoutStep(1);
+      setPaymentSecondsLeft(480);
+    }
   }, [isOpen]);
+
+  // 8-minute payment window: runs only on the payment step, stops on step/modal close.
+  useEffect(() => {
+    if (!isOpen || checkoutStep !== 3) return;
+    setPaymentSecondsLeft(480);
+    const timer = setInterval(() => {
+      setPaymentSecondsLeft(prev => (prev > 0 ? prev - 1 : 0));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isOpen, checkoutStep]);
+
+  const formatCountdown = (seconds: number) =>
+    `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
 
   if (!isOpen) return null;
 
@@ -326,8 +345,17 @@ export default function CheckoutModal({
                   <h4 className="text-white font-serif font-bold text-base">Step 3: Select Payment Option</h4>
                   <p className="text-xs text-gray-400 mt-0.5">All transactions are encrypted with 256-Bit SSL protection.</p>
                 </div>
-                <div className="flex items-center gap-1.5 text-emerald-400 text-xs bg-emerald-950/60 border border-emerald-500/30 px-2.5 py-1 rounded">
-                  <Lock className="w-3.5 h-3.5" /> 100% Secure
+                <div className="flex flex-col items-end gap-1.5">
+                  <div className={`flex items-center gap-1.5 text-xs font-mono px-2.5 py-1 rounded border ${
+                    paymentSecondsLeft === 0
+                      ? 'text-rose-300 bg-rose-950/60 border-rose-500/40'
+                      : 'text-amber-300 bg-amber-950/40 border-amber-500/30'
+                  }`}>
+                    <Clock className="w-3.5 h-3.5" /> {formatCountdown(paymentSecondsLeft)}
+                  </div>
+                  <div className="flex items-center gap-1.5 text-emerald-400 text-xs bg-emerald-950/60 border border-emerald-500/30 px-2.5 py-1 rounded">
+                    <Lock className="w-3.5 h-3.5" /> 100% Secure
+                  </div>
                 </div>
               </div>
 
@@ -390,6 +418,19 @@ export default function CheckoutModal({
                         ₹{cartFinalTotal.toLocaleString('en-IN')}
                       </span>
                     </div>
+                    {paymentSecondsLeft === 0 ? (
+                      <div className="space-y-3">
+                        <div className="bg-rose-950/40 border border-rose-500/40 text-rose-300 text-xs p-3 rounded-lg text-center font-semibold">
+                          Payment time expired
+                        </div>
+                        <button
+                          onClick={onBackToCart}
+                          className="w-full border border-[#D4AF37]/50 text-[#D4AF37] hover:bg-[#D4AF37]/10 font-semibold py-3 rounded-xl transition-all text-xs tracking-wider uppercase cursor-pointer flex items-center justify-center gap-2"
+                        >
+                          <ArrowLeft className="w-4 h-4" /> Back to Cart
+                        </button>
+                      </div>
+                    ) : (
                     <button
                       onClick={() => {
                         const genOrderId = `#SRM-${Math.floor(100000 + Math.random() * 900000)}`;
@@ -427,6 +468,7 @@ export default function CheckoutModal({
                     >
                       <Lock className="w-4 h-4" /> Pay ₹{cartFinalTotal.toLocaleString('en-IN')} & Confirm Order
                     </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -465,7 +507,7 @@ export default function CheckoutModal({
                     <strong className="text-sm font-mono text-[#D4AF37]">{confirmedOrder.orderId}</strong>
                   </div>
                   <span className="text-xs bg-emerald-950 text-emerald-400 border border-emerald-500/30 px-2.5 py-1 rounded-full font-semibold">
-                    Confirmed
+                    Order Confirmed
                   </span>
                 </div>
 

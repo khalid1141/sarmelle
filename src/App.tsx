@@ -471,6 +471,10 @@ export default function App() {
           setIsCheckoutOpen(false);
           setCurrentView('home');
         }}
+        onBackToCart={() => {
+          setIsCheckoutOpen(false);
+          setCartOpen(true);
+        }}
       />
 
       {/* ================= WISHLIST DRAWER ================= */}
