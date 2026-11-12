@@ -29,6 +29,9 @@
 - [x] Extraction Step 1 (Types): Extract TypeScript interfaces to `src/types/` (`product.ts`, `campaign.ts`, `order.ts`).
 - [x] Extraction Step 2 (Mock Data): Extract mock arrays to `src/data/` (`products.ts`, `reviews.ts`, `campaign.ts`, `orders.ts`).
 - [ ] Finish App.tsx split (Steps 3 to 8), merge to main after a manual click-through.
+- [ ] Fix breadcrumb navigation: breadcrumb text beyond "Home" (e.g. category on collection page, category and product on product page) is currently not clickable.
+- [ ] Fix hero slide index: slide index resets on return to Home and on browser-tab switch (visibility change).
+- [ ] Enforce checkout authentication: guest users can currently reach checkout; must trigger login modal first while keeping cart, and backend server must reject unauthenticated orders.
 - [ ] Checkout polish: UPI only, remove cards, NetBanking, COD and the "address type" field.
 - [ ] Remove unused packages (@google/genai, express, tsx, dotenv) after verifying nothing uses them.
 - [ ] Add real routing and product/category URLs.
