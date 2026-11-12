@@ -55,6 +55,7 @@
 - [ ] Inventory locking, transactions, and overselling prevention.
 - [ ] Order placement flow -> Awaiting Owner Stock Review status.
 - [ ] Payment gateway integration (Razorpay sandbox mode, UPI ONLY, webhook signature verification, idempotency).
+- [ ] Server must reject unauthenticated order creation.
 - [ ] Order acceptance, rejection, and refund workflows.
 - [ ] Courier shipping tracking and notification adapters.
 
@@ -73,5 +74,6 @@
 - [ ] Test backups, restoration, and rollback procedures.
 
 ## Milestone 8 — Production Launch (`sarmelle.com`)
+- [ ] Razorpay UPI integration replaces the mock payment step in Milestone 8.
 - [ ] Production DNS configuration at GoDaddy & Hostinger.
 - [ ] SSL certificate verification, final security smoke tests, and live deployment.
