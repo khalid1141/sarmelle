@@ -4,14 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  Search, User, Heart, ShoppingBag, Menu, X, Filter, ChevronDown, 
-  Star, Check, ArrowRight, ShieldCheck, Truck, RotateCcw, SlidersHorizontal, 
-  Sparkles, Flame, Tag, HelpCircle, Eye, Trash2, Plus, Minus, Lock, CheckCircle2,
-  Package, ShoppingCart, Users, BarChart3, Settings, LogOut, RefreshCw,
-  ChevronLeft, ChevronRight, Clock, Gem, Mail, Edit3, CreditCard, QrCode, Building,
-  ArrowLeft, Download, BadgeCheck, ArrowUpDown, LogIn, MapPin, Calendar, FileText, AlertCircle, KeyRound
-} from 'lucide-react';
+import { ShoppingBag } from 'lucide-react';
 
 import type { Product, ProductReview } from './types/product';
 import type { HeroSlide, PromoBanner, FeaturedBlock, LookbookConfig } from './types/campaign';
@@ -269,13 +262,6 @@ export default function App() {
     if (sortBy === 'Newest') return b.id - a.id;
     return 0; // Featured
   });
-
-  const activeFilterCount = (selectedCategory !== 'All' ? 1 : 0) +
-    (selectedOfferType !== 'All' ? 1 : 0) +
-    (selectedFabric !== 'All' ? 1 : 0) +
-    (selectedColorFilter !== 'All' ? 1 : 0) +
-    (maxPrice < 10000 ? 1 : 0);
-  const hasActiveFilters = activeFilterCount > 0;
 
   // Infinite Scroll State for Collection View (Initial 9 products, loads remaining on scroll)
   const [visibleProductsCount, setVisibleProductsCount] = useState<number>(9);
