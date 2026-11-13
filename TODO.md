@@ -78,5 +78,7 @@
 
 ## Milestone 8 — Production Launch (`sarmelle.com`)
 - [ ] Razorpay UPI integration replaces the mock payment step in Milestone 8.
+- [ ] Mock payment succeeds instantly; real flow waits for Razorpay confirmation, then clears the cart (Milestone 8).
+- [ ] Optional: fake "waiting for payment approval" screen to mirror the real UPI flow.
 - [ ] Production DNS configuration at GoDaddy & Hostinger.
 - [ ] SSL certificate verification, final security smoke tests, and live deployment.
