@@ -31,8 +31,11 @@
 - [ ] Finish App.tsx split (Steps 3 to 8), merge to main after a manual click-through.
 - [ ] Fix breadcrumb navigation: breadcrumb text beyond "Home" (e.g. category on collection page, category and product on product page) is currently not clickable.
 - [ ] Fix hero slide index: resets to 1 when returning to Home. Cause: HomeView unmounts when leaving Home (side effect of the split; at baseline the index lived in App and persisted). No code resets it on browser-tab switch; a jump after switching tabs is likely throttled timers. Cosmetic. Fix later by lifting currentHeroSlide to App or accepting it.
-- [ ] Enforce checkout authentication: guest users can currently reach checkout; must trigger login modal first while keeping cart, and backend server must reject unauthenticated orders.
-- [ ] Checkout polish: UPI only, remove cards, NetBanking, COD and the "address type" field.
+- [x] Enforce checkout authentication: guest users can currently reach checkout; must trigger login modal first while keeping cart, and backend server must reject unauthenticated orders.
+- [x] Checkout polish: UPI only, remove cards, NetBanking, COD and the "address type" field.
+- [ ] Remove mock demo account from AuthModal in Milestone 4.
+- [ ] Payment countdown resets when the payment step is re-entered; server must enforce the real 8-minute expiry.
+- [ ] Login accepts email or phone with the same password; real backend must support both.
 - [ ] Remove unused packages (@google/genai, express, tsx, dotenv) after verifying nothing uses them.
 - [ ] Remove unused React default import in App.tsx; ordersSubFilter is dead state (written, never read).
 - [ ] Add real routing and product/category URLs.
