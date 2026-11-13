@@ -1,6 +1,13 @@
 import React, { useState } from 'react';
 import { X, ArrowLeft, CheckCircle2 } from 'lucide-react';
 
+// MOCK ONLY - remove in Milestone 4 (real login)
+const DEMO_ACCOUNT = {
+  email: 'priya@example.com',
+  phone: '9876543210',
+  password: 'Priya@123'
+};
+
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -13,6 +20,9 @@ export default function AuthModal({
   onAuthenticated
 }: AuthModalProps) {
   const [authMode, setAuthMode] = useState<'login' | 'register' | 'forgot'>('login');
+  const [loginIdentifier, setLoginIdentifier] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
   const [forgotPasswordEmail, setForgotPasswordEmail] = useState('');
   const [forgotPasswordSent, setForgotPasswordSent] = useState(false);
 
@@ -79,16 +89,35 @@ export default function AuthModal({
           <form
             onSubmit={(e) => {
               e.preventDefault();
+              const identifier = loginIdentifier.trim();
+              const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier);
+              const isPhone = /^[6-9]\d{9}$/.test(identifier);
+              if (!isEmail && !isPhone) {
+                setLoginError('Enter a valid email address or 10-digit mobile number.');
+                return;
+              }
+              const identifierMatches = isEmail
+                ? identifier.toLowerCase() === DEMO_ACCOUNT.email.toLowerCase()
+                : identifier === DEMO_ACCOUNT.phone;
+              if (!identifierMatches || loginPassword !== DEMO_ACCOUNT.password) {
+                setLoginError('Incorrect email/phone or password');
+                return;
+              }
+              setLoginError('');
               onAuthenticated();
             }}
             className="space-y-4"
           >
             <div>
-              <label className="text-[11px] uppercase tracking-wider text-gray-400 block mb-1">Email Address</label>
+              <label className="text-[11px] uppercase tracking-wider text-gray-400 block mb-1">Email address / Phone number</label>
               <input
-                type="email"
-                required
-                placeholder="you@example.com"
+                type="text"
+                value={loginIdentifier}
+                onChange={(e) => {
+                  setLoginIdentifier(e.target.value);
+                  setLoginError('');
+                }}
+                placeholder="Email address / Phone number"
                 className="w-full bg-black border border-[#D4AF37]/35 rounded-lg p-2.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-[#D4AF37] transition-colors"
               />
             </div>
@@ -108,11 +137,20 @@ export default function AuthModal({
               </div>
               <input
                 type="password"
-                required
+                value={loginPassword}
+                onChange={(e) => {
+                  setLoginPassword(e.target.value);
+                  setLoginError('');
+                }}
                 placeholder="••••••••"
                 className="w-full bg-black border border-[#D4AF37]/35 rounded-lg p-2.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-[#D4AF37] transition-colors"
               />
             </div>
+            {loginError && (
+              <p className="text-[11px] text-rose-400 bg-rose-950/40 border border-rose-500/40 rounded-lg px-3 py-2">
+                {loginError}
+              </p>
+            )}
             <button
               type="submit"
               className="w-full bg-gradient-to-r from-[#D4AF37] to-[#AA771C] text-black font-bold py-3 rounded-lg text-xs uppercase tracking-widest hover:brightness-110 transition-all cursor-pointer shadow-lg mt-2"
