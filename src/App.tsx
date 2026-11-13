@@ -465,6 +465,7 @@ export default function App() {
         isFreeShippingEligible={isFreeShippingEligible}
         onOrderPlaced={(order) => {
           setUserOrders(prev => [order, ...prev]);
+          setCart([]);
         }}
         onContinueShopping={() => {
           setCart([]);
