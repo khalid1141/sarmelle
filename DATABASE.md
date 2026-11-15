@@ -30,7 +30,7 @@
 - **Primary Keys**: `BIGINT UNSIGNED AUTO_INCREMENT` named `id` across all primary entity tables.
 - **Monetary Values**: Stored strictly as exact integers in paise (`BIGINT UNSIGNED`), avoiding floating-point precision loss (e.g., ₹2,999.00 is stored as `299900`).
 - **Timestamps**: Expressed in UTC using `created_at` (`DEFAULT CURRENT_TIMESTAMP`) and `updated_at` (`DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`).
-- **Soft Deletes**: Managed via nullable UTC timestamp `deleted_at` (`DEFAULT NULL`) where required by ADMIN_SPEC (products: delete is allowed only from Draft or Archived and removes products from admin lists while preserving sales history and order snapshots; categories and collections also provide `deleted_at`).
+- **Soft Deletes**: Managed via nullable UTC timestamp `deleted_at` (`DEFAULT NULL`) where required by ADMIN_SPEC. Currently only `products`, `categories` and `collections` carry `deleted_at`; `product_colour_variants` uses an `is_active` flag instead so that a hidden colour can be reactivated rather than tombstoned.
 
 ---
 
@@ -125,6 +125,7 @@
 - **Indexes**:
   - `idx_<table>_is_active`: (`is_active`)
 - **Enum Values**: None.
+- **Deletion policy**: Managed list rows are **hidden, never deleted**. Set `is_active = 0` to remove a value from the admin dropdowns and storefront filters; existing products keep their reference via `ON DELETE RESTRICT`.
 
 ---
 
@@ -203,12 +204,14 @@
   - `fk_products_category`: `category_id` REFERENCES `categories(id)` ON DELETE RESTRICT ON UPDATE CASCADE
   - `fk_products_sub_category`: `sub_category_id` REFERENCES `categories(id)` ON DELETE RESTRICT ON UPDATE CASCADE
   - `fk_products_size_chart`: `size_chart_id` REFERENCES `size_charts(id)` ON DELETE RESTRICT ON UPDATE CASCADE (prevents deleting charts in use)
-  - `fk_products_set_type`: `set_type_id` REFERENCES `set_types(id)` ON DELETE SET NULL ON UPDATE CASCADE
-  - `fk_products_fabric`: `fabric_id` REFERENCES `fabrics(id)` ON DELETE SET NULL ON UPDATE CASCADE
-  - `fk_products_occasion`: `occasion_id` REFERENCES `occasions(id)` ON DELETE SET NULL ON UPDATE CASCADE
-  - `fk_products_fit`: `fit_id` REFERENCES `fits(id)` ON DELETE SET NULL ON UPDATE CASCADE
-  - `fk_products_sleeve_type`: `sleeve_type_id` REFERENCES `sleeve_types(id)` ON DELETE SET NULL ON UPDATE CASCADE
-  - `fk_products_neck_type`: `neck_type_id` REFERENCES `neck_types(id)` ON DELETE SET NULL ON UPDATE CASCADE
+  - `fk_products_set_type`: `set_type_id` REFERENCES `set_types(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_products_fabric`: `fabric_id` REFERENCES `fabrics(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_products_occasion`: `occasion_id` REFERENCES `occasions(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_products_fit`: `fit_id` REFERENCES `fits(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_products_sleeve_type`: `sleeve_type_id` REFERENCES `sleeve_types(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_products_neck_type`: `neck_type_id` REFERENCES `neck_types(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+- **Check Constraints**:
+  - `chk_products_sale_price`: `sale_price_paise <= mrp_paise` (a sale price may equal MRP but never exceed it)
 - **Unique Constraints**:
   - `uq_products_slug`: (`slug`)
 - **Indexes**:
@@ -257,9 +260,9 @@
   - `colour_code`: VARCHAR(7), NOT NULL (Hex RGB string, e.g. '#004D40')
   - `price_override_paise`: BIGINT UNSIGNED, NULL, DEFAULT NULL (Optional price override in paise)
   - `display_order`: INT UNSIGNED, NOT NULL, DEFAULT 0
+  - `is_active`: TINYINT(1), NOT NULL, DEFAULT 1 (1 = active, 0 = hidden)
   - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
   - `updated_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-  - `deleted_at`: TIMESTAMP, NULL, DEFAULT NULL
 - **Primary Key**: `id`
 - **Foreign Keys**:
   - `fk_product_colour_variants_product`: `product_id` REFERENCES `products(id)` ON DELETE CASCADE ON UPDATE CASCADE
@@ -268,6 +271,7 @@
 - **Indexes**:
   - `idx_product_colour_variants_product_order`: (`product_id`, `display_order`)
 - **Enum Values**: None.
+- **Note**: Colours are hidden with `is_active = 0`, never soft-deleted, so that re-adding a hidden colour reactivates the existing row (matching the unique `product_id` + `colour_name` key).
 
 ---
 
@@ -296,20 +300,24 @@
 ---
 
 #### 11. `product_variant_sizes`
-- **Purpose**: Defines size offerings (S, M, L, XL, Free size) per colour variant and holds available physical stock quantity. When quantity is 0, variant automatically displays "Out of stock" (Section 3 & 4).
+- **Purpose**: Defines size offerings (S, M, L, XL, Free size) per colour variant and holds the physical stock count. When available stock reaches 0, the variant automatically displays "Out of stock" (Section 3 & 4); available stock is derived from this row minus unexpired holds.
 - **Columns**:
   - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
   - `product_id`: BIGINT UNSIGNED, NOT NULL
   - `colour_variant_id`: BIGINT UNSIGNED, NOT NULL
   - `size_name`: VARCHAR(32), NOT NULL (e.g. 'XS', 'S', 'M', 'L', 'XL', 'Free size')
   - `sku`: VARCHAR(64), NULL, DEFAULT NULL (Variant SKU identifier)
-  - `quantity`: INT, NOT NULL, DEFAULT 0 (Available physical stock)
+  - `quantity`: INT, NOT NULL, DEFAULT 0 (Physical stock on hand; unexpired holds are subtracted at read time)
+  - `display_order`: INT UNSIGNED, NOT NULL, DEFAULT 0 (Size display ordering)
+  - `is_active`: TINYINT(1), NOT NULL, DEFAULT 1 (1 = offered, 0 = hidden size)
   - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
   - `updated_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 - **Primary Key**: `id`
 - **Foreign Keys**:
   - `fk_product_variant_sizes_product`: `product_id` REFERENCES `products(id)` ON DELETE CASCADE ON UPDATE CASCADE
   - `fk_product_variant_sizes_colour`: `colour_variant_id` REFERENCES `product_colour_variants(id)` ON DELETE CASCADE ON UPDATE CASCADE
+- **Check Constraints**:
+  - `chk_product_variant_sizes_quantity`: `quantity >= 0`
 - **Unique Constraints**:
   - `uq_product_variant_sizes_colour_size`: (`colour_variant_id`, `size_name`)
   - `uq_product_variant_sizes_sku`: (`sku`)
@@ -317,6 +325,10 @@
   - `idx_product_variant_sizes_product_id`: (`product_id`)
   - `idx_product_variant_sizes_quantity`: (`quantity`)
 - **Enum Values**: None.
+- **Available stock rule**: Available stock is **not** a stored column. It is `quantity` minus the sum of unexpired `stock_holds.quantity` for that row, computed inside a database transaction that takes a row lock on the `product_variant_sizes` row (`SELECT ... FOR UPDATE`). Holds whose `expires_at` is in the past are ignored in the calculation and deleted by a periodic cleanup job.
+- **Decrement rule**: Checkout reduces stock with a guarded update:
+  `UPDATE product_variant_sizes SET quantity = quantity - n WHERE id = ? AND quantity >= n;`
+  Zero rows changed means the stock was taken concurrently, i.e. the item is sold out; the transaction rolls back. Because the condition is evaluated inside the database, the check and the decrement cannot be split by a race.
 
 ---
 
@@ -337,7 +349,7 @@
 - **Primary Key**: `id`
 - **Foreign Keys**:
   - `fk_stock_movements_variant_size`: `product_variant_size_id` REFERENCES `product_variant_sizes(id)` ON DELETE RESTRICT ON UPDATE CASCADE
-  - `fk_stock_movements_product`: `product_id` REFERENCES `products(id)` ON DELETE CASCADE ON UPDATE CASCADE
+  - `fk_stock_movements_product`: `product_id` REFERENCES `products(id)` ON DELETE RESTRICT ON UPDATE CASCADE (a product with stock history can never be hard-deleted)
 - **Unique Constraints**: None.
 - **Indexes**:
   - `idx_stock_movements_variant_time`: (`product_variant_size_id`, `created_at`)
@@ -347,27 +359,61 @@
 
 ---
 
+#### 13. `stock_holds`
+- **Purpose**: Temporary reservations created when a customer starts checkout, so the same last units are not sold twice during the payment window. Holds are bookkeeping only: `product_variant_sizes.quantity` always remains the physical stock and is only decremented when an order is actually placed.
+- **Columns**:
+  - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
+  - `product_variant_size_id`: BIGINT UNSIGNED, NOT NULL (Variant size being held)
+  - `quantity`: INT UNSIGNED, NOT NULL (Units held for this checkout attempt)
+  - `checkout_ref`: VARCHAR(64), NOT NULL (Opaque checkout attempt reference; the order link is added in Part B)
+  - `expires_at`: DATETIME, NOT NULL (UTC instant when the hold stops counting)
+  - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
+- **Primary Key**: `id`
+- **Foreign Keys**:
+  - `fk_stock_holds_variant_size`: `product_variant_size_id` REFERENCES `product_variant_sizes(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+- **Unique Constraints**:
+  - `uq_stock_holds_checkout_variant`: (`checkout_ref`, `product_variant_size_id`) — one hold row per variant per checkout attempt; adding to an existing hold updates its quantity and expiry.
+- **Indexes**:
+  - `idx_stock_holds_variant_expiry`: (`product_variant_size_id`, `expires_at`)
+- **Enum Values**: None.
+- **How availability is computed**: Available stock = `product_variant_sizes.quantity` − SUM of `stock_holds.quantity` where `product_variant_size_id` matches and `expires_at > UTC_NOW()`. This read happens inside a transaction that row-locks the `product_variant_sizes` row, so two concurrent checkouts cannot both see the same remaining units.
+- **Expiry**: Expired holds (`expires_at <= UTC_NOW()`) are ignored by the availability query and physically removed by a cleanup job; no cancellation path is required for correctness.
+- **Converting a hold to a sale**: The order transaction re-checks availability with the lock held, then runs the guarded decrement described under `product_variant_sizes`, writes a `stock_movements` row, and deletes the hold.
+
+---
+
+### Design rules
+1. **At least one colour**: Every product has a minimum of one `product_colour_variants` row. There is no colourless product, so images, sizes and stock always hang off a colour.
+2. **Price override scope**: `product_colour_variants.price_override_paise`, when set, replaces `products.sale_price_paise` for that colour only. The MRP (`products.mrp_paise`) is never overridden, so the displayed discount stays consistent across colours.
+3. **Slug uniqueness and lookup**: Before a slug is used for a new or renamed product, the application checks **both** `products.slug` and `product_slug_history.slug`. A hit in either table means the slug is taken (current product or a redirect) and a numeric suffix is added.
+4. **Deleted status and timestamp**: `products.deleted_at` is set exactly when `status` becomes `Deleted`, and is cleared only if the row is restored. The two must never disagree; treat `deleted_at IS NOT NULL` as equivalent to `status = 'Deleted'`.
+5. **Delete renames the slug**: On delete, the product slug is renamed to `<slug>-deleted-<id>`. This frees the original slug for reuse while keeping the unique index satisfied. All `product_slug_history` rows for that product are deleted at the same time so no redirect resurrects a deleted product.
+6. **One primary image per colour**: Each `product_colour_variants` row has exactly one `product_images` row with `is_primary = 1`. Setting a new primary unsets the previous one in the same transaction.
+7. **Sub-category belongs to category**: When `products.sub_category_id` is set, `categories.parent_id` of that sub-category must equal `products.category_id`. The database cannot express this with a simple FK, so it is enforced in the application (and can be backstopped by a trigger later if desired).
+8. **Never hard-delete a product with stock history**: `stock_movements.product_id` is `ON DELETE RESTRICT`, so a product that has ever moved stock cannot be hard-deleted. Deletion is always the soft `status = 'Deleted'` path; order snapshots preserve sales history.
+9. **Maximum two category levels**: Categories are either top-level (`parent_id IS NULL`) or sub-categories (one level deep). A row whose parent already has a parent is invalid; depth is capped at two so the product form's Category/Sub-category dropdowns stay unambiguous.
+10. **Holds never touch physical stock**: `stock_holds` only reduces *available* stock at read time. `product_variant_sizes.quantity` changes solely through the guarded decrement at order placement or through an admin stock edit, and every such change writes a `stock_movements` row.
+
+---
+
 ### Relationship Summary
-1. **Category Hierarchy**: `categories` (parent) `1 : N` `categories` (sub-categories) via `parent_id`.
-2. **Product Categorization**: `categories` `1 : N` `products` (assigned both a primary `category_id` and an optional `sub_category_id`).
+1. **Category Hierarchy**: `categories` (parent) `1 : N` `categories` (sub-categories) via `parent_id`, capped at two levels.
+2. **Product Categorization**: `categories` `1 : N` `products` (assigned both a primary `category_id` and an optional `sub_category_id`); the sub-category's parent must equal the product's category.
 3. **Collections**: `products` `N : M` `collections` via the join table `product_collections`.
-4. **Managed Lists**: Each managed list table (`fabrics`, `occasions`, `fits`, `sleeve_types`, `neck_types`, `set_types`) has a `1 : N` relationship to `products`.
+4. **Managed Lists**: Each managed list table (`fabrics`, `occasions`, `fits`, `sleeve_types`, `neck_types`, `set_types`) has a `1 : N` relationship to `products` with `ON DELETE RESTRICT`; values are hidden with `is_active`, never deleted.
 5. **Size Charts**: `size_charts` `1 : N` `size_chart_rows`. In addition, `size_charts` `1 : N` `products` with `ON DELETE RESTRICT` ensuring in-use charts cannot be accidentally removed.
-6. **Slug History**: `products` `1 : N` `product_slug_history` for URL redirect preservation.
-7. **Colour Variants**: `products` `1 : N` `product_colour_variants` (each colour defines RGB and optional price override).
-8. **Product Images**: `product_colour_variants` `1 : N` `product_images` (each image belongs to a specific colour variant).
-9. **Sizes and Inventory**: `product_colour_variants` `1 : N` `product_variant_sizes` (one row per colour + size combination tracking quantity).
-10. **Inventory Movement Audit**: `product_variant_sizes` `1 : N` `stock_movements` (full immutable log of stock adjustments).
+6. **Slug History**: `products` `1 : N` `product_slug_history` for URL redirect preservation; rows are removed when a product is deleted, and slug uniqueness spans both tables.
+7. **Colour Variants**: `products` `1 : N` `product_colour_variants`; every product has at least one colour, colours are hidden via `is_active`, and an optional per-colour price override replaces only the sale price.
+8. **Product Images**: `product_colour_variants` `1 : N` `product_images` (each image belongs to a specific colour variant, exactly one flagged primary per colour).
+9. **Sizes and Inventory**: `product_colour_variants` `1 : N` `product_variant_sizes` (one row per colour + size combination holding physical `quantity`).
+10. **Stock Holds**: `product_variant_sizes` `1 : N` `stock_holds`; unexpired holds are subtracted from `quantity` to give available stock at read time, and expired holds are cleaned up.
+11. **Inventory Movement Audit**: `product_variant_sizes` `1 : N` `stock_movements`, and `products` `1 : N` `stock_movements` with `ON DELETE RESTRICT` (full immutable log of stock adjustments).
 
 ---
 
 ### Questions
-1. **5-Minute Payment Stock Hold**: ADMIN_SPEC states that on the inventory screen "only available stock is shown" and there is "no separate 'reserved' column", yet during checkout payment initiation, items must be held for 5 minutes. How should this temporary stock hold be stored and enforced?
-   - *Option A*: Transient storage via Redis cache with a 5-minute TTL (`stock_hold:{variant_size_id}:{cart_id}`).
-   - *Option B*: A lightweight SQL table `stock_reservations` (`variant_size_id`, `quantity`, `expires_at`, `cart_or_checkout_id`) with expired entries filtered or culled periodically.
-   - *Option C*: Storing an explicit `reserved_quantity` column in `product_variant_sizes` with a scheduled worker releasing holds past 5 minutes.
-2. **Order-Related Stock Movement Link**: `stock_movements.order_id` is defined as a loose `BIGINT UNSIGNED NULL` column in Part A without a foreign key constraint. The foreign key constraint and cascade/restrict rules will be added in Part B when the `orders` table is introduced.
-3. **Admin User Reference on Stock Movements**: In `stock_movements`, `user_id` is currently nullable alongside an immutable `performed_by` string snapshot. When user accounts are finalized in subsequent design parts, should `user_id` strictly foreign-key to the `users` table, allowing null only for automated system operations?
-4. **Size Chart Range Formats**: `size_chart_rows` stores measurement values (`bust`, `waist`, `hip`, `length`) as `VARCHAR(32)` to allow either single numbers (e.g. `36`) or ranges (e.g. `36-38` or unstitched ranges). Is this acceptable, or are purely numeric `DECIMAL(5,2)` values required for client-side conversions?
-5. **Maximum Category Hierarchy Depth**: The self-referencing `categories` table allows arbitrary nesting, but ADMIN_SPEC specifies dropdowns for Category and Sub-category. Should nesting beyond 2 levels be strictly prevented in application business logic?
+1. **Order-Related Links**: `stock_movements.order_id` and the order reference on `stock_holds` are intentionally loose (`BIGINT UNSIGNED NULL` / `checkout_ref`) in Part A. Their foreign keys and delete rules will be added in Part B alongside the `orders` table.
+2. **Admin User Reference on Stock Movements**: In `stock_movements`, `user_id` is currently nullable alongside an immutable `performed_by` string snapshot. When user accounts are finalized in a later part, should `user_id` strictly foreign-key to the `users` table, allowing null only for automated system operations?
+3. **Size Chart Range Formats**: `size_chart_rows` stores measurement values (`bust`, `waist`, `hip`, `length`) as `VARCHAR(32)` to allow single numbers (`36`) or ranges (`36-38`). The owner will decide whether flexible columns are kept or replaced with numeric `DECIMAL` values supporting unit conversion; unchanged in this revision.
+4. **Stock Hold Cleanup Cadence**: Expired holds are ignored by the availability query, so correctness does not depend on cleanup. Is a periodic delete job sufficient, or should `stock_holds` be pruned opportunistically on each checkout attempt for the same variant?
 

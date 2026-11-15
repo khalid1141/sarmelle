@@ -192,15 +192,16 @@ CREATE TABLE IF NOT EXISTS `products` (
     INDEX `idx_products_set_type_id` (`set_type_id`),
     INDEX `idx_products_created_at` (`created_at`),
     INDEX `idx_products_sale_price_paise` (`sale_price_paise`),
+    CONSTRAINT `chk_products_sale_price` CHECK (`sale_price_paise` <= `mrp_paise`),
     CONSTRAINT `fk_products_category` FOREIGN KEY (`category_id`) REFERENCES `categories` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
     CONSTRAINT `fk_products_sub_category` FOREIGN KEY (`sub_category_id`) REFERENCES `categories` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
     CONSTRAINT `fk_products_size_chart` FOREIGN KEY (`size_chart_id`) REFERENCES `size_charts` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-    CONSTRAINT `fk_products_set_type` FOREIGN KEY (`set_type_id`) REFERENCES `set_types` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
-    CONSTRAINT `fk_products_fabric` FOREIGN KEY (`fabric_id`) REFERENCES `fabrics` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
-    CONSTRAINT `fk_products_occasion` FOREIGN KEY (`occasion_id`) REFERENCES `occasions` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
-    CONSTRAINT `fk_products_fit` FOREIGN KEY (`fit_id`) REFERENCES `fits` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
-    CONSTRAINT `fk_products_sleeve_type` FOREIGN KEY (`sleeve_type_id`) REFERENCES `sleeve_types` (`id`) ON DELETE SET NULL ON UPDATE CASCADE,
-    CONSTRAINT `fk_products_neck_type` FOREIGN KEY (`neck_type_id`) REFERENCES `neck_types` (`id`) ON DELETE SET NULL ON UPDATE CASCADE
+    CONSTRAINT `fk_products_set_type` FOREIGN KEY (`set_type_id`) REFERENCES `set_types` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_products_fabric` FOREIGN KEY (`fabric_id`) REFERENCES `fabrics` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_products_occasion` FOREIGN KEY (`occasion_id`) REFERENCES `occasions` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_products_fit` FOREIGN KEY (`fit_id`) REFERENCES `fits` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_products_sleeve_type` FOREIGN KEY (`sleeve_type_id`) REFERENCES `sleeve_types` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_products_neck_type` FOREIGN KEY (`neck_type_id`) REFERENCES `neck_types` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
@@ -240,9 +241,9 @@ CREATE TABLE IF NOT EXISTS `product_colour_variants` (
     `colour_code` VARCHAR(7) NOT NULL COMMENT 'Hex format #RRGGBB',
     `price_override_paise` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Optional price override in paise',
     `display_order` INT UNSIGNED NOT NULL DEFAULT 0,
+    `is_active` TINYINT(1) NOT NULL DEFAULT 1 COMMENT '1 = active, 0 = hidden (re-adding reactivates)',
     `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    `deleted_at` TIMESTAMP NULL DEFAULT NULL,
     UNIQUE KEY `uq_product_colour_variants_product_colour` (`product_id`, `colour_name`),
     INDEX `idx_product_colour_variants_product_order` (`product_id`, `display_order`),
     CONSTRAINT `fk_product_colour_variants_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
@@ -276,13 +277,16 @@ CREATE TABLE IF NOT EXISTS `product_variant_sizes` (
     `colour_variant_id` BIGINT UNSIGNED NOT NULL,
     `size_name` VARCHAR(32) NOT NULL COMMENT 'e.g. XS, S, M, L, XL, Free size',
     `sku` VARCHAR(64) NULL,
-    `quantity` INT NOT NULL DEFAULT 0 COMMENT 'Available physical inventory',
+    `quantity` INT NOT NULL DEFAULT 0 COMMENT 'Physical stock on hand',
+    `display_order` INT UNSIGNED NOT NULL DEFAULT 0,
+    `is_active` TINYINT(1) NOT NULL DEFAULT 1,
     `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY `uq_product_variant_sizes_colour_size` (`colour_variant_id`, `size_name`),
     UNIQUE KEY `uq_product_variant_sizes_sku` (`sku`),
     INDEX `idx_product_variant_sizes_product_id` (`product_id`),
     INDEX `idx_product_variant_sizes_quantity` (`quantity`),
+    CONSTRAINT `chk_product_variant_sizes_quantity` CHECK (`quantity` >= 0),
     CONSTRAINT `fk_product_variant_sizes_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT `fk_product_variant_sizes_colour` FOREIGN KEY (`colour_variant_id`) REFERENCES `product_colour_variants` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -306,7 +310,22 @@ CREATE TABLE IF NOT EXISTS `stock_movements` (
     INDEX `idx_stock_movements_product_time` (`product_id`, `created_at`),
     INDEX `idx_stock_movements_order_id` (`order_id`),
     CONSTRAINT `fk_stock_movements_variant_size` FOREIGN KEY (`product_variant_size_id`) REFERENCES `product_variant_sizes` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-    CONSTRAINT `fk_stock_movements_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+    CONSTRAINT `fk_stock_movements_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 11. stock_holds (temporary checkout reservations)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `stock_holds` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `product_variant_size_id` BIGINT UNSIGNED NOT NULL,
+    `quantity` INT UNSIGNED NOT NULL,
+    `checkout_ref` VARCHAR(64) NOT NULL COMMENT 'Checkout attempt reference; order link added in Part B',
+    `expires_at` DATETIME NOT NULL COMMENT 'UTC expiry of the hold',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX `idx_stock_holds_variant_expiry` (`product_variant_size_id`, `expires_at`),
+    UNIQUE KEY `uq_stock_holds_checkout_variant` (`checkout_ref`, `product_variant_size_id`),
+    CONSTRAINT `fk_stock_holds_variant_size` FOREIGN KEY (`product_variant_size_id`) REFERENCES `product_variant_sizes` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;
