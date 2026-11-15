@@ -2,6 +2,7 @@
 -- Sarmelle Database Schema Draft
 -- Part A: Catalogue and Stock
 -- Part B1: Customers, Admin, Settings, Coupons
+-- Part B2a: Orders and Payments
 -- Target Engine: MySQL 8.0+ / MariaDB 10.5+
 -- Storage Engine: InnoDB
 -- Character Set: utf8mb4
@@ -324,28 +325,31 @@ CREATE TABLE IF NOT EXISTS `stock_movements` (
     `new_quantity` INT NOT NULL,
     `quantity_change` INT NOT NULL COMMENT 'Delta: new_quantity - old_quantity',
     `reason` VARCHAR(255) NOT NULL COMMENT 'e.g. Retail sale, Stock arrival, Audit correction',
-    `order_id` BIGINT UNSIGNED NULL COMMENT 'Order-related link to be added in Part B',
+    `order_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Sale that caused the movement; NULL for arrivals and corrections',
     `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'When movement occurred',
     INDEX `idx_stock_movements_variant_time` (`product_variant_size_id`, `created_at`),
     INDEX `idx_stock_movements_product_time` (`product_id`, `created_at`),
     INDEX `idx_stock_movements_order_id` (`order_id`),
     CONSTRAINT `fk_stock_movements_variant_size` FOREIGN KEY (`product_variant_size_id`) REFERENCES `product_variant_sizes` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
     CONSTRAINT `fk_stock_movements_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-    CONSTRAINT `fk_stock_movements_user` FOREIGN KEY (`user_id`) REFERENCES `admin_users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+    CONSTRAINT `fk_stock_movements_user` FOREIGN KEY (`user_id`) REFERENCES `admin_users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_stock_movements_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
--- 11. stock_holds (temporary checkout reservations)
+-- 11. stock_holds (temporary checkout reservations, keyed by order)
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `stock_holds` (
     `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `order_id` BIGINT UNSIGNED NOT NULL COMMENT 'Order created when the customer clicked Pay',
     `product_variant_size_id` BIGINT UNSIGNED NOT NULL,
     `quantity` INT UNSIGNED NOT NULL,
-    `checkout_ref` VARCHAR(64) NOT NULL COMMENT 'Checkout attempt reference; order link added in Part B',
     `expires_at` DATETIME NOT NULL COMMENT 'UTC expiry of the hold',
     `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_stock_holds_order_variant` (`order_id`, `product_variant_size_id`),
     INDEX `idx_stock_holds_variant_expiry` (`product_variant_size_id`, `expires_at`),
-    UNIQUE KEY `uq_stock_holds_checkout_variant` (`checkout_ref`, `product_variant_size_id`),
+    INDEX `idx_stock_holds_expires_at` (`expires_at`),
+    CONSTRAINT `fk_stock_holds_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT `fk_stock_holds_variant_size` FOREIGN KEY (`product_variant_size_id`) REFERENCES `product_variant_sizes` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -551,6 +555,189 @@ CREATE TABLE IF NOT EXISTS `activity_log` (
     INDEX `idx_activity_log_admin_time` (`admin_user_id`, `created_at`),
     INDEX `idx_activity_log_created_at` (`created_at`),
     CONSTRAINT `fk_activity_log_admin` FOREIGN KEY (`admin_user_id`) REFERENCES `admin_users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =============================================================================
+-- PART B2a: ORDERS AND PAYMENTS
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- 28. orders (never hard-deleted; one row per checkout attempt)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `orders` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `order_number` VARCHAR(16) NOT NULL COMMENT 'Public ID, e.g. SRM-7K2Q9M; random from 23456789ABCDEFGHJKMNPQRSTUVWXYZ, never sequential',
+    `customer_id` BIGINT UNSIGNED NOT NULL,
+    `customer_name` VARCHAR(150) NOT NULL COMMENT 'Snapshot at checkout',
+    `customer_email` VARCHAR(255) NOT NULL COMMENT 'Snapshot at checkout',
+    `customer_phone` VARCHAR(20) NOT NULL COMMENT 'Snapshot at checkout',
+    `ship_recipient_name` VARCHAR(150) NOT NULL,
+    `ship_phone` VARCHAR(20) NOT NULL,
+    `ship_address_line1` VARCHAR(255) NOT NULL,
+    `ship_address_line2` VARCHAR(255) NULL DEFAULT NULL,
+    `ship_city` VARCHAR(100) NOT NULL,
+    `ship_state` VARCHAR(100) NOT NULL,
+    `ship_pincode` VARCHAR(10) NOT NULL COMMENT 'Text to keep leading zeros',
+    `subtotal_paise` BIGINT UNSIGNED NOT NULL COMMENT 'Sum of order_items.line_total_paise before discount',
+    `discount_paise` BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    `shipping_paise` BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    `total_paise` BIGINT UNSIGNED NOT NULL COMMENT 'subtotal - discount + shipping',
+    `coupon_code` VARCHAR(32) NULL DEFAULT NULL COMMENT 'Snapshot of coupons.code, stored uppercase; NULL = no code',
+    `status` ENUM('payment_pending', 'new', 'shipped', 'delivered', 'rejected', 'cancelled') NOT NULL DEFAULT 'payment_pending',
+    `courier_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Set when shipped',
+    `courier_name` VARCHAR(100) NULL DEFAULT NULL COMMENT 'Snapshot of couriers.name at ship time',
+    `tracking_id` VARCHAR(100) NULL DEFAULT NULL,
+    `paid_at` DATETIME NULL DEFAULT NULL COMMENT 'UTC capture instant',
+    `shipped_at` DATETIME NULL DEFAULT NULL,
+    `delivered_at` DATETIME NULL DEFAULT NULL COMMENT 'Owner-entered delivered date, stored at 00:00:00 UTC',
+    `rejected_at` DATETIME NULL DEFAULT NULL,
+    `cancelled_at` DATETIME NULL DEFAULT NULL,
+    `cancel_reason` ENUM('payment_expired', 'customer_request', 'admin_cancel') NULL DEFAULT NULL COMMENT 'NULL unless status = cancelled',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_orders_order_number` (`order_number`),
+    INDEX `idx_orders_status_created_at` (`status`, `created_at`),
+    INDEX `idx_orders_created_at` (`created_at`),
+    INDEX `idx_orders_customer_phone` (`customer_phone`),
+    INDEX `idx_orders_customer_name` (`customer_name`),
+    INDEX `idx_orders_customer_id` (`customer_id`, `created_at`),
+    CONSTRAINT `chk_orders_total` CHECK (`total_paise` + `discount_paise` = `subtotal_paise` + `shipping_paise`),
+    CONSTRAINT `chk_orders_discount` CHECK (`discount_paise` <= `subtotal_paise`),
+    CONSTRAINT `fk_orders_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_orders_courier` FOREIGN KEY (`courier_id`) REFERENCES `couriers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 29. order_items (sales-report snapshots, one row per line)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `order_items` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `order_id` BIGINT UNSIGNED NOT NULL,
+    `product_id` BIGINT UNSIGNED NOT NULL,
+    `product_variant_size_id` BIGINT UNSIGNED NOT NULL,
+    `product_name` VARCHAR(255) NOT NULL COMMENT 'Snapshot at order time',
+    `category_name` VARCHAR(100) NOT NULL COMMENT 'Snapshot at order time',
+    `sub_category_name` VARCHAR(100) NULL DEFAULT NULL COMMENT 'Snapshot at order time',
+    `description` TEXT NULL DEFAULT NULL COMMENT 'Snapshot at order time',
+    `size_name` VARCHAR(32) NOT NULL COMMENT 'Snapshot at order time',
+    `set_type_name` VARCHAR(100) NULL DEFAULT NULL COMMENT 'Snapshot at order time',
+    `colour_name` VARCHAR(64) NOT NULL COMMENT 'Snapshot at order time',
+    `fabric_name` VARCHAR(100) NULL DEFAULT NULL COMMENT 'Snapshot at order time',
+    `mrp_paise` BIGINT UNSIGNED NOT NULL COMMENT 'MRP at order time (the report "sale price" column)',
+    `price_paise` BIGINT UNSIGNED NOT NULL COMMENT 'Price actually charged per unit, after any colour override',
+    `quantity` INT UNSIGNED NOT NULL,
+    `line_total_paise` BIGINT UNSIGNED NOT NULL COMMENT 'price_paise * quantity',
+    `image_path` VARCHAR(512) NULL DEFAULT NULL COMMENT 'Snapshot of the primary image path for that colour',
+    INDEX `idx_order_items_order_id` (`order_id`),
+    INDEX `idx_order_items_product_id` (`product_id`),
+    INDEX `idx_order_items_variant_size_id` (`product_variant_size_id`),
+    CONSTRAINT `chk_order_items_quantity` CHECK (`quantity` > 0),
+    CONSTRAINT `chk_order_items_line_total` CHECK (`line_total_paise` = `price_paise` * `quantity`),
+    CONSTRAINT `fk_order_items_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_order_items_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_order_items_variant_size` FOREIGN KEY (`product_variant_size_id`) REFERENCES `product_variant_sizes` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 30. order_status_history (append-only; 10-minute reject undo)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `order_status_history` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `order_id` BIGINT UNSIGNED NOT NULL,
+    `from_status` ENUM('payment_pending', 'new', 'shipped', 'delivered', 'rejected', 'cancelled') NULL DEFAULT NULL COMMENT 'NULL only on the row created with the order',
+    `to_status` ENUM('payment_pending', 'new', 'shipped', 'delivered', 'rejected', 'cancelled') NOT NULL,
+    `admin_user_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'NULL = system job, webhook or customer action',
+    `note` VARCHAR(255) NULL DEFAULT NULL COMMENT 'Short human note; never payment payloads or payer data',
+    `undo_until` DATETIME NULL DEFAULT NULL COMMENT 'Set on Reject: created_at + 10 minutes',
+    `undone_at` DATETIME NULL DEFAULT NULL COMMENT 'Stamped when undo is used; the row is never deleted',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX `idx_order_status_history_order_time` (`order_id`, `created_at`),
+    INDEX `idx_order_status_history_undo_until` (`undo_until`),
+    CONSTRAINT `fk_order_status_history_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_order_status_history_admin` FOREIGN KEY (`admin_user_id`) REFERENCES `admin_users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 31. payments (Razorpay IDs and amounts only; no payer details, ever)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `payments` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `order_id` BIGINT UNSIGNED NOT NULL,
+    `razorpay_order_id` VARCHAR(64) NOT NULL,
+    `razorpay_payment_id` VARCHAR(64) NULL DEFAULT NULL COMMENT 'Set when Razorpay confirms the payment',
+    `amount_paise` BIGINT UNSIGNED NOT NULL COMMENT 'Must equal orders.total_paise',
+    `status` ENUM('created', 'captured', 'failed') NOT NULL DEFAULT 'created',
+    `failure_code` VARCHAR(64) NULL DEFAULT NULL COMMENT 'Razorpay failure code, or hold_expired when the hold ran out',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `captured_at` DATETIME NULL DEFAULT NULL,
+    UNIQUE KEY `uq_payments_razorpay_order` (`razorpay_order_id`),
+    UNIQUE KEY `uq_payments_razorpay_payment` (`razorpay_payment_id`),
+    INDEX `idx_payments_order_id` (`order_id`),
+    INDEX `idx_payments_status_created_at` (`status`, `created_at`),
+    CONSTRAINT `fk_payments_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 32. payment_webhook_events (dedupe and diagnosis; never the raw body)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `payment_webhook_events` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `razorpay_event_id` VARCHAR(64) NOT NULL COMMENT 'Unique per delivery; duplicate insert = already processed',
+    `event_type` VARCHAR(64) NOT NULL COMMENT 'e.g. payment.captured, payment.failed, refund.processed',
+    `razorpay_payment_id` VARCHAR(64) NULL DEFAULT NULL COMMENT 'Loose link, not a FK, so unknown payments are still recorded',
+    `received_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `processed_at` DATETIME NULL DEFAULT NULL COMMENT 'NULL = not yet handled, including failed handling',
+    `outcome` VARCHAR(32) NULL DEFAULT NULL COMMENT 'applied, ignored, unmatched, failed',
+    UNIQUE KEY `uq_payment_webhook_events_event` (`razorpay_event_id`),
+    INDEX `idx_payment_webhook_events_payment` (`razorpay_payment_id`),
+    INDEX `idx_payment_webhook_events_pending` (`processed_at`, `received_at`),
+    INDEX `idx_payment_webhook_events_received_at` (`received_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 33. refunds (manual Razorpay refunds; drives the Refund pending list)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `refunds` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `order_id` BIGINT UNSIGNED NOT NULL,
+    `payment_id` BIGINT UNSIGNED NOT NULL COMMENT 'Captured payment attempt being refunded',
+    `kind` ENUM('reject', 'cancellation', 'return', 'late_payment') NOT NULL,
+    `amount_paise` BIGINT UNSIGNED NOT NULL,
+    `includes_shipping` TINYINT(1) NOT NULL DEFAULT 0,
+    `status` ENUM('pending', 'done') NOT NULL DEFAULT 'pending',
+    `razorpay_refund_id` VARCHAR(64) NULL DEFAULT NULL COMMENT 'Pasted by the owner; optional',
+    `requested_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `done_at` DATETIME NULL DEFAULT NULL,
+    `done_by` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Admin who ticked Refund done',
+    `cancellation_request_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Loose: FK added in Part B2b',
+    `return_request_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Loose: FK added in Part B2b',
+    UNIQUE KEY `uq_refunds_razorpay_refund` (`razorpay_refund_id`),
+    INDEX `idx_refunds_status_requested` (`status`, `requested_at`),
+    INDEX `idx_refunds_order_id` (`order_id`),
+    INDEX `idx_refunds_payment_id` (`payment_id`),
+    CONSTRAINT `chk_refunds_done` CHECK ((`status` = 'pending' AND `done_at` IS NULL) OR (`status` = 'done' AND `done_at` IS NOT NULL)),
+    CONSTRAINT `fk_refunds_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_refunds_payment` FOREIGN KEY (`payment_id`) REFERENCES `payments` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_refunds_done_by` FOREIGN KEY (`done_by`) REFERENCES `admin_users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 34. coupon_redemptions (which order used which code; releases used_count)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `coupon_redemptions` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `coupon_id` BIGINT UNSIGNED NOT NULL,
+    `order_id` BIGINT UNSIGNED NOT NULL,
+    `customer_id` BIGINT UNSIGNED NOT NULL,
+    `discount_paise` BIGINT UNSIGNED NOT NULL COMMENT 'Discount actually applied to this order',
+    `released_at` DATETIME NULL DEFAULT NULL COMMENT 'Set when the order is rejected, cancelled or fully refunded',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_coupon_redemptions_order` (`order_id`),
+    INDEX `idx_coupon_redemptions_customer_coupon` (`customer_id`, `coupon_id`),
+    INDEX `idx_coupon_redemptions_coupon_released` (`coupon_id`, `released_at`),
+    CONSTRAINT `fk_coupon_redemptions_coupon` FOREIGN KEY (`coupon_id`) REFERENCES `coupons` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_coupon_redemptions_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_coupon_redemptions_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;

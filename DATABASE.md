@@ -775,3 +775,357 @@ All six are now decided. The answers below are the design of record for Part B1;
 - **Coupon extremes are owner-controlled**: A 100% coupon with no cap and no minimum, or a large `max_discount_paise`, is a one-click loss. Validation should warn, and the activity log records every coupon edit.
 - **`free_shipping_threshold_paise = 0`**: The "disabled" meaning must be implemented the same way in cart, checkout and order totals, or the storefront and the server will disagree about shipping.
 
+## Schema design draft - Part B2a: orders and payments
+
+### Scope
+
+This part adds the order, order-item, status-history, payment, webhook, refund and coupon-redemption tables, and converts the two loose Part A order links into real foreign keys. It is design only: no SQL is executed.
+
+- **Cart is still not a table.** Orders are written only when the customer clicks Pay, from data the server has just re-read.
+- **Orders are never hard-deleted.** There is no `deleted_at` on `orders` and every child table uses `ON DELETE RESTRICT`; status is the only lifecycle. (The single exception is `stock_holds`, which is disposable by design.)
+- **Cancellations, returns and exchanges are Part B2b.** This part provides the status values, the refund rows and the two nullable loose columns (`refunds.cancellation_request_id`, `refunds.return_request_id`) that B2b will attach.
+- **No payer details, ever.** No UPI IDs, card numbers, payment methods, bank references or raw webhook bodies are stored anywhere in this part.
+
+### How checkout works (plain words)
+
+1. The customer clicks **Pay**. The server re-reads every price and the live stock from the database (never from the browser), recomputes subtotal, coupon discount, shipping and total, and generates the order number.
+2. The server then asks Razorpay for an order, using the generated order number as the receipt, and writes **one transaction**: the `orders` row with status `payment_pending`, one `order_items` row per line with all report snapshots, one `stock_holds` row per variant, the `coupon_redemptions` row plus the guarded `coupons.used_count` increment, and a `payments` row with status `created` and that `razorpay_order_id`. Availability is re-checked with the variant rows locked inside this transaction, and the hold expiry is `now + the 5-minute window from settings`. No network call happens inside the transaction; if the write fails, the unused Razorpay order is harmless and the customer sees an error.
+3. The browser opens the Razorpay payment screen. Nothing is deducted from physical stock yet.
+4. When Razorpay reports the payment, the server verifies the signature first, then loads the payment row by `razorpay_order_id` and acts only if the order is still `payment_pending`. In **one transaction** it sets the order to `new` and stamps `paid_at`, marks the payment `captured` with `captured_at`, runs the guarded stock decrement (`quantity >= ?`) for each line, writes one `stock_movements` row per line, and deletes the order's `stock_holds` rows. Then the "Order received" email to the customer and the new-order email to the owner go out.
+5. If any guard fails (hold gone, stock gone, order no longer pending), the transaction rolls back and the payment is handled by the late-payment path below instead of creating a sale.
+
+Because the order already exists before payment, a failed or abandoned payment leaves audit rows behind, and the same webhook arriving twice cannot create two sales: the status guard and the unique Razorpay IDs make the whole step idempotent.
+
+### Hold expiry (plain words)
+
+Holds are bookkeeping only; `product_variant_sizes.quantity` is untouched until payment is verified. A scheduled job (and the availability query itself) treats any hold with `expires_at <= UTC_NOW()` as gone.
+
+When a pending order's holds have expired, the cleanup job marks the order `cancelled` with `cancel_reason = 'payment_expired'`, stamps `cancelled_at`, deletes its `stock_holds` rows, releases its coupon use, and closes the payment attempt (`status = 'failed'`, `failure_code = 'hold_expired'`). No email is sent to the customer for an abandoned payment.
+
+**The Orders table hides these by default.** Its default predicate is:
+
+```sql
+status <> 'payment_pending'
+AND (status <> 'cancelled' OR paid_at IS NOT NULL)
+```
+
+So pending checkouts and expired unpaid orders never clutter the list, while a real cancellation (money was taken) still shows. The admin can still find an expired order by searching its order number if support ever needs it.
+
+### A payment that arrives after expiry (plain words)
+
+Razorpay can confirm a payment after the 5-minute hold has already expired. The money is real, but the order is already `cancelled` and its stock has gone back to available.
+
+The server records the capture on the existing `payments` row (status back to `captured`, `razorpay_payment_id` filled, `captured_at` set) and stamps `orders.paid_at`. The order **stays cancelled** — it is not resurrected and stock is not re-held. Instead a `refunds` row is written with `kind = 'late_payment'`, the full captured amount including shipping, `status = 'pending'`. That row appears in the admin's **Refund pending** list with the Razorpay payment ID, exactly like ADMIN_SPEC section 9 requires, and the owner refunds it manually.
+
+If the customer still wants the goods they place a new order. Nothing links the two automatically.
+
+### Reject (plain words)
+
+Reject is the owner's "we cannot fulfil this" action. It is available once payment is verified (`new`), up to the moment of shipping. An unpaid `payment_pending` order has no money to refund and is cleared with `admin_cancel` instead (see Questions 6).
+
+1. Status becomes `rejected`, `rejected_at` is stamped, and a `refunds` row of `kind = 'reject'` is created for the **full order total including shipping** with `status = 'pending'`. It appears in Refund pending immediately.
+2. A **Restock** checkbox is shown, **unticked by default**. Ticking it returns each line's quantity to `product_variant_sizes.quantity` and writes a `stock_movements` row per line, in the same transaction.
+3. A `order_status_history` row records `new -> rejected` with `undo_until = now + 10 minutes`. **The customer email is not sent yet.** A scheduled job sends the "unable to fulfil your order, refund coming, 5 to 7 working days" email once `undo_until` has passed and `undone_at` is still `NULL`.
+4. **Undo within 10 minutes** restores the previous status, stamps `undone_at` on the reject history row (the row itself is kept), deletes the still-pending refund row (nothing was refunded in Razorpay yet), reverses the coupon release, and — if stock had been restocked — takes it back out again. The take-back is a guarded decrement; **if the units are no longer available the undo is refused** and the admin is told why, so the count can never go negative.
+5. After 10 minutes the undo window is closed in the application. Refunds are manual and never automatic, so nothing is refunded before the window ends.
+
+### Shipped and Delivered (plain words)
+
+- **Shipped requires both a courier and a tracking ID.** The server refuses the transition if either is missing; the default courier is only a pre-selection, not a value. On success it copies `couriers.name` into `orders.courier_name`, stores `courier_id`, `tracking_id` and `shipped_at`, and sends the tracking email.
+- **Delivered** requires an owner-entered delivered date. It is stored in `delivered_at` as `00:00:00` UTC of that date (the storefront and admin only ever show a date), and the return window starts from it. `delivered_at` can never be earlier than `shipped_at`.
+
+### Allowed status changes
+
+| From | To | Trigger | Notes |
+| --- | --- | --- | --- |
+| — | `payment_pending` | Customer clicks Pay | Order + items + holds + coupon + payment row in one transaction |
+| `payment_pending` | `new` | Server verifies payment | Stocks deducted, holds deleted, emails sent |
+| `payment_pending` | `cancelled` | Hold expired / owner clears an unpaid attempt | `cancel_reason` = `payment_expired` or `admin_cancel`; no refund, no email |
+| `new` | `shipped` | Owner saves courier + tracking | Both mandatory |
+| `new` | `rejected` | Owner rejects | Full refund incl. shipping, restock optional, 10-minute undo |
+| `new` | `cancelled` | Accepted customer cancellation | `cancel_reason = 'customer_request'`; refund kind `cancellation` |
+| `shipped` | `delivered` | Owner marks delivered + date | Date cannot precede `shipped_at`; starts return window |
+| `shipped` | `cancelled` | Accepted customer cancellation before delivery | Refund kind `cancellation` |
+| `rejected` | previous status | Undo within 10 minutes | Only reversal ever allowed; `undone_at` stamped on the history row |
+
+Everything else is refused: no `new -> delivered`, no going back to `payment_pending`, no status change out of `delivered` (returns are B2b), and `rejected` / `cancelled` are terminal apart from the reject undo. `cancel_reason` must match the path: `payment_expired` only from `payment_pending`, `admin_cancel` only when `paid_at IS NULL`, `customer_request` only when `paid_at IS NOT NULL`.
+
+### Table Specifications
+
+#### 28. `orders`
+
+- **Purpose**: One row per checkout attempt and its full lifecycle. Created when the customer clicks Pay, before any money moves. Carries every snapshot the admin screens, invoices and support need, so later product or customer edits never rewrite history.
+- **Columns**:
+  - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
+  - `order_number`: VARCHAR(16), NOT NULL, no default (public ID shown as `SRM-xxxxxx`; six random characters from the alphabet `23456789ABCDEFGHJKMNPQRSTUVWXYZ`, so it is not sequential and leaks no volume)
+  - `customer_id`: BIGINT UNSIGNED, NOT NULL (account that placed the order; never changes)
+  - `customer_name`: VARCHAR(150), NOT NULL (snapshot at checkout)
+  - `customer_email`: VARCHAR(255), NOT NULL (snapshot at checkout)
+  - `customer_phone`: VARCHAR(20), NOT NULL (snapshot at checkout)
+  - `ship_recipient_name`: VARCHAR(150), NOT NULL
+  - `ship_phone`: VARCHAR(20), NOT NULL
+  - `ship_address_line1`: VARCHAR(255), NOT NULL
+  - `ship_address_line2`: VARCHAR(255), NULL, DEFAULT NULL
+  - `ship_city`: VARCHAR(100), NOT NULL
+  - `ship_state`: VARCHAR(100), NOT NULL
+  - `ship_pincode`: VARCHAR(10), NOT NULL (text, keeps leading zeros)
+  - `subtotal_paise`: BIGINT UNSIGNED, NOT NULL (sum of `order_items.line_total_paise` before discount)
+  - `discount_paise`: BIGINT UNSIGNED, NOT NULL, DEFAULT 0
+  - `shipping_paise`: BIGINT UNSIGNED, NOT NULL, DEFAULT 0
+  - `total_paise`: BIGINT UNSIGNED, NOT NULL (`subtotal - discount + shipping`)
+  - `coupon_code`: VARCHAR(32), NULL, DEFAULT NULL (uppercase snapshot of `coupons.code`; NULL = no coupon)
+  - `status`: ENUM, NOT NULL, DEFAULT `payment_pending`
+  - `courier_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL (set at ship time)
+  - `courier_name`: VARCHAR(100), NULL, DEFAULT NULL (snapshot of `couriers.name` at ship time)
+  - `tracking_id`: VARCHAR(100), NULL, DEFAULT NULL
+  - `paid_at`: DATETIME, NULL, DEFAULT NULL (UTC capture instant)
+  - `shipped_at`: DATETIME, NULL, DEFAULT NULL
+  - `delivered_at`: DATETIME, NULL, DEFAULT NULL (owner-entered delivered date, stored at `00:00:00` UTC)
+  - `rejected_at`: DATETIME, NULL, DEFAULT NULL
+  - `cancelled_at`: DATETIME, NULL, DEFAULT NULL
+  - `cancel_reason`: ENUM, NULL, DEFAULT NULL (`NULL` unless the order is cancelled)
+  - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
+  - `updated_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+- **Primary Key**: `id`
+- **Foreign Keys**:
+  - `fk_orders_customer`: `customer_id` REFERENCES `customers(id)` ON DELETE RESTRICT ON UPDATE CASCADE (orders outlive account anonymisation)
+  - `fk_orders_courier`: `courier_id` REFERENCES `couriers(id)` ON DELETE RESTRICT ON UPDATE CASCADE (a courier that has ever shipped cannot be deleted; deactivate it instead)
+- **Unique Constraints**:
+  - `uq_orders_order_number`: (`order_number`) — the public identifier used in emails, URLs and support.
+- **Indexes**:
+  - `idx_orders_status_created_at`: (`status`, `created_at`) — the default Orders list and the status filter.
+  - `idx_orders_created_at`: (`created_at`) — date-range filter and Sales report range.
+  - `idx_orders_customer_phone`: (`customer_phone`) — search by phone (exact or prefix).
+  - `idx_orders_customer_name`: (`customer_name`) — search by name (prefix).
+  - `idx_orders_customer_id`: (`customer_id`, `created_at`) — one customer's order history, and the FK.
+- **CHECK constraints**: `chk_orders_total` (`total_paise + discount_paise = subtotal_paise + shipping_paise`), `chk_orders_discount` (`discount_paise <= subtotal_paise`). Written as additions only, because subtraction on UNSIGNED columns raises errors on some configurations.
+- **Enum Values**:
+  - `status`: `payment_pending`, `new`, `shipped`, `delivered`, `rejected`, `cancelled` (displayed as Payment pending, New, Shipped, Delivered, Rejected, Cancelled).
+  - `cancel_reason`: `payment_expired`, `customer_request`, `admin_cancel`.
+- **Order number generation**: generate with a CSPRNG, attempt the insert, and retry on duplicate-key (a handful of retries is plenty at ~887 million combinations). It is never derived from `id` and never reused, including after cancellation. `utf8mb4_unicode_ci` makes lookups case-insensitive, so `srm-7k2q9m` finds `SRM-7K2Q9M`; always display and email the uppercase form.
+
+#### 29. `order_items`
+
+- **Purpose**: Immutable price and description snapshots, one row per line, written at order creation. This table is the whole Sales report: every field ADMIN_SPEC section 13 needs is copied here, so editing or deleting a product can never change an old order or a past report.
+- **Columns**:
+  - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
+  - `order_id`: BIGINT UNSIGNED, NOT NULL
+  - `product_id`: BIGINT UNSIGNED, NOT NULL
+  - `product_variant_size_id`: BIGINT UNSIGNED, NOT NULL
+  - `product_name`: VARCHAR(255), NOT NULL (snapshot)
+  - `category_name`: VARCHAR(100), NOT NULL (snapshot of the parent category)
+  - `sub_category_name`: VARCHAR(100), NULL, DEFAULT NULL (snapshot)
+  - `description`: TEXT, NULL, DEFAULT NULL (snapshot at order time)
+  - `size_name`: VARCHAR(32), NOT NULL (snapshot)
+  - `set_type_name`: VARCHAR(100), NULL, DEFAULT NULL (snapshot)
+  - `colour_name`: VARCHAR(64), NOT NULL (snapshot)
+  - `fabric_name`: VARCHAR(100), NULL, DEFAULT NULL (snapshot)
+  - `mrp_paise`: BIGINT UNSIGNED, NOT NULL (the "sale price" column in the report)
+  - `price_paise`: BIGINT UNSIGNED, NOT NULL (price actually charged per unit, after any colour override)
+  - `quantity`: INT UNSIGNED, NOT NULL
+  - `line_total_paise`: BIGINT UNSIGNED, NOT NULL (`price_paise * quantity`)
+  - `image_path`: VARCHAR(512), NULL, DEFAULT NULL (snapshot of the primary image path for that colour)
+- **Primary Key**: `id`
+- **Foreign Keys**:
+  - `fk_order_items_order`: `order_id` REFERENCES `orders(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_order_items_product`: `product_id` REFERENCES `products(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_order_items_variant_size`: `product_variant_size_id` REFERENCES `product_variant_sizes(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+- **Unique Constraints**: None. Two lines for the same variant in one order are prevented by the cart merging them before checkout, not by the schema.
+- **Indexes**: `idx_order_items_order_id` (`order_id`) — report join and order detail screen; `idx_order_items_product_id` (`product_id`) — per-product sales lookup and FK; `idx_order_items_variant_size_id` (`product_variant_size_id`) — FK and stock investigation.
+- **CHECK constraints**: `chk_order_items_quantity` (`quantity > 0`), `chk_order_items_line_total` (`line_total_paise = price_paise * quantity`).
+- **Enum Values**: None.
+- **Snapshot note**: `product_id` and `product_variant_size_id` exist for traceability and stock movements only. Prices, names and report fields always come from the snapshot columns, never from a join.
+
+#### 30. `order_status_history`
+
+- **Purpose**: Append-only record of every status change, who made it, and the 10-minute undo window used by Reject. It is also the audit trail behind "who cancelled what and why".
+- **Columns**:
+  - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
+  - `order_id`: BIGINT UNSIGNED, NOT NULL
+  - `from_status`: ENUM, NULL, DEFAULT NULL (`NULL` only on the row created with the order)
+  - `to_status`: ENUM, NOT NULL
+  - `admin_user_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL (`NULL` = system job, payment webhook, hold expiry, or a customer action)
+  - `note`: VARCHAR(255), NULL, DEFAULT NULL (short human note; never a payment payload or personal data)
+  - `undo_until`: DATETIME, NULL, DEFAULT NULL (set on a Reject: `created_at + 10 minutes`)
+  - `undone_at`: DATETIME, NULL, DEFAULT NULL (stamped when the undo is used; the row is never deleted)
+  - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
+- **Primary Key**: `id`
+- **Foreign Keys**:
+  - `fk_order_status_history_order`: `order_id` REFERENCES `orders(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_order_status_history_admin`: `admin_user_id` REFERENCES `admin_users(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+- **Unique Constraints**: None.
+- **Indexes**: `idx_order_status_history_order_time` (`order_id`, `created_at`) — order timeline and "the latest undoable reject"; `idx_order_status_history_undo_until` (`undo_until`) — the delayed-email job scans only rows with a live window.
+- **Enum Values**: `from_status` and `to_status` use the six `orders.status` values.
+- **Undo lookup**: the undo action reads the most recent row for that order where `undone_at IS NULL AND undo_until > UTC_NOW()` and `to_status = 'rejected'`, then verifies it is still the newest row. A second reject, a shipment or a cancellation therefore cannot be undone by a stale window.
+
+#### 31. `payments`
+
+- **Purpose**: One row per Razorpay payment attempt, holding only the IDs and amounts needed to reconcile, refund and answer support. It never contains payer details.
+- **Columns**:
+  - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
+  - `order_id`: BIGINT UNSIGNED, NOT NULL
+  - `razorpay_order_id`: VARCHAR(64), NOT NULL (created server-side at Pay)
+  - `razorpay_payment_id`: VARCHAR(64), NULL, DEFAULT NULL (filled when Razorpay confirms)
+  - `amount_paise`: BIGINT UNSIGNED, NOT NULL (must equal `orders.total_paise`)
+  - `status`: ENUM, NOT NULL, DEFAULT `created`
+  - `failure_code`: VARCHAR(64), NULL, DEFAULT NULL (Razorpay's code, or `hold_expired` when the hold ran out and nothing was charged)
+  - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
+  - `captured_at`: DATETIME, NULL, DEFAULT NULL
+- **Primary Key**: `id`
+- **Foreign Keys**:
+  - `fk_payments_order`: `order_id` REFERENCES `orders(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+- **Unique Constraints**:
+  - `uq_payments_razorpay_order`: (`razorpay_order_id`) — one local row per Razorpay order, so a webhook resolves to exactly one attempt.
+  - `uq_payments_razorpay_payment`: (`razorpay_payment_id`) — duplicate capture webhooks cannot create a second row; MySQL allows several NULLs, so unpaid attempts still coexist.
+- **Indexes**: `idx_payments_order_id` (`order_id`) — all attempts for an order; `idx_payments_status_created_at` (`status`, `created_at`) — reconciliation and stale-attempt checks.
+- **Enum Values**: `status`: `created`, `captured`, `failed`.
+- **One order, several attempts**: `order_id` is not unique. A failed attempt followed by a retry inside the hold window produces two rows with different `razorpay_order_id`s. The sale is always booked against the row that was captured.
+
+#### 32. `payment_webhook_events`
+
+- **Purpose**: Deduplication and diagnosis for Razorpay webhooks, without storing the payload. Razorpay retries deliveries, so the event ID is recorded first; a duplicate insert fails on the unique key and is acknowledged without reprocessing.
+- **Columns**:
+  - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
+  - `razorpay_event_id`: VARCHAR(64), NOT NULL (unique per delivery, per Razorpay)
+  - `event_type`: VARCHAR(64), NOT NULL (e.g. `payment.captured`, `payment.failed`, `refund.processed`)
+  - `razorpay_payment_id`: VARCHAR(64), NULL, DEFAULT NULL (a loose link, not a foreign key, so events for unknown payments are still recorded)
+  - `received_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
+  - `processed_at`: DATETIME, NULL, DEFAULT NULL (NULL = not yet handled, including failed handling)
+  - `outcome`: VARCHAR(32), NULL, DEFAULT NULL (free text: `applied`, `ignored`, `unmatched`, `failed`)
+- **Primary Key**: `id`
+- **Foreign Keys**: None. The payment ID is intentionally not a foreign key; the event must be storable even before the local payment row exists or after it was matched to a different attempt.
+- **Unique Constraints**: `uq_payment_webhook_events_event` (`razorpay_event_id`) — the duplicate guard.
+- **Indexes**: `idx_payment_webhook_events_payment` (`razorpay_payment_id`) — trace one payment; `idx_payment_webhook_events_pending` (`processed_at`, `received_at`) — the retry queue for unprocessed events; `idx_payment_webhook_events_received_at` (`received_at`) — retention pruning and monitoring.
+- **Enum Values**: None (`outcome` is free text so new Razorpay event types need no migration).
+- **Deliberately absent**: no request body, no headers, no signature, no payer details. UPI IDs appear inside webhook payloads, so the body is parsed in memory and never written.
+
+#### 33. `refunds`
+
+- **Purpose**: The **Refund pending** list and the permanent record of every refund the owner performs manually in the Razorpay dashboard. One row per refund event, whether it was caused by a reject, a cancellation, a return or a late payment.
+- **Columns**:
+  - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
+  - `order_id`: BIGINT UNSIGNED, NOT NULL
+  - `payment_id`: BIGINT UNSIGNED, NOT NULL (which captured attempt is refunded)
+  - `kind`: ENUM, NOT NULL
+  - `amount_paise`: BIGINT UNSIGNED, NOT NULL
+  - `includes_shipping`: TINYINT(1), NOT NULL, DEFAULT 0
+  - `status`: ENUM, NOT NULL, DEFAULT `pending`
+  - `razorpay_refund_id`: VARCHAR(64), NULL, DEFAULT NULL (pasted by the owner, optional)
+  - `requested_at`: DATETIME, NOT NULL, DEFAULT CURRENT_TIMESTAMP
+  - `done_at`: DATETIME, NULL, DEFAULT NULL
+  - `done_by`: BIGINT UNSIGNED, NULL, DEFAULT NULL (admin who ticked Refund done)
+  - `cancellation_request_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL (loose; FK added in B2b)
+  - `return_request_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL (loose; FK added in B2b)
+- **Primary Key**: `id`
+- **Foreign Keys**:
+  - `fk_refunds_order`: `order_id` REFERENCES `orders(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_refunds_payment`: `payment_id` REFERENCES `payments(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_refunds_done_by`: `done_by` REFERENCES `admin_users(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+- **Unique Constraints**: `uq_refunds_razorpay_refund` (`razorpay_refund_id`) — the same Razorpay refund cannot be recorded twice (several NULLs are allowed while pending).
+- **Indexes**: `idx_refunds_status_requested` (`status`, `requested_at`) — the Refund pending list (`status = 'pending'`, oldest first); `idx_refunds_order_id` (`order_id`) — refunds on one order; `idx_refunds_payment_id` (`payment_id`) — refunds against one payment and FK.
+- **CHECK constraints**: `chk_refunds_done` (`(status = 'pending' AND done_at IS NULL) OR (status = 'done' AND done_at IS NOT NULL)`). `done_by` is app-required when `status = 'done'`.
+- **Enum Values**:
+  - `kind`: `reject`, `cancellation`, `return`, `late_payment`.
+  - `status`: `pending`, `done`.
+- **Amounts**: `reject`, `cancellation` and `late_payment` always store the full amount the customer paid with `includes_shipping = 1` (reject is explicitly "full, including shipping"). `return` amounts and their shipping treatment are decided in B2b. Rows are never deleted once `done`; a pending row created by a reject is removed only if that reject is undone inside its window.
+
+#### 34. `coupon_redemptions`
+
+- **Purpose**: The authoritative record of which order used which coupon, at what discount. `coupons.used_count` is only a cached counter of the un-released rows here. The table also enforces one code per order and the per-customer repeat-use rule, and it is the row that drives releasing a use.
+- **Columns**:
+  - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
+  - `coupon_id`: BIGINT UNSIGNED, NOT NULL
+  - `order_id`: BIGINT UNSIGNED, NOT NULL
+  - `customer_id`: BIGINT UNSIGNED, NOT NULL
+  - `discount_paise`: BIGINT UNSIGNED, NOT NULL (what was actually taken off this order)
+  - `released_at`: DATETIME, NULL, DEFAULT NULL (set when the order is rejected, cancelled or fully refunded)
+  - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
+- **Primary Key**: `id`
+- **Foreign Keys**:
+  - `fk_coupon_redemptions_coupon`: `coupon_id` REFERENCES `coupons(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_coupon_redemptions_order`: `order_id` REFERENCES `orders(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_coupon_redemptions_customer`: `customer_id` REFERENCES `customers(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+- **Unique Constraints**: `uq_coupon_redemptions_order` (`order_id`) — at most one redemption per order, which is how "one code per order" is enforced.
+- **Indexes**: `idx_coupon_redemptions_customer_coupon` (`customer_id`, `coupon_id`) — the "already used by this customer" check when `allow_repeat_use = 0`; `idx_coupon_redemptions_coupon_released` (`coupon_id`, `released_at`) — live redemptions per coupon and reconciliation against `used_count`.
+- **Enum Values**: None.
+
+### Changes to the Part A tables
+
+#### `stock_holds` (revised)
+
+`checkout_ref` is replaced by a real order link. The hold is written in the same transaction as the order, so the order exists first and is always known.
+
+- **Columns now**: `id`; `order_id` BIGINT UNSIGNED NOT NULL (the order created when the customer clicked Pay); `product_variant_size_id`; `quantity`; `expires_at`; `created_at`.
+- **FK added**: `fk_stock_holds_order`: `order_id` REFERENCES `orders(id)` ON DELETE CASCADE ON UPDATE CASCADE. Holds are the one disposable part of the order graph, so they are the one place a cascade is correct: deleting the order removes its reservations.
+- **Unique constraint replaced**: `uq_stock_holds_order_variant` (`order_id`, `product_variant_size_id`) replaces `uq_stock_holds_checkout_variant`. Adding the same variant twice updates quantity and expiry instead of creating a second row.
+- **Index additions**: `idx_stock_holds_expires_at` (`expires_at`) so the cleanup job can find expired holds without scanning by variant first.
+
+Availability is unchanged: physical `quantity` minus the sum of unexpired holds.
+
+#### `stock_movements` (revised)
+
+`order_id` becomes a real foreign key instead of a loose column:
+
+- **FK added**: `fk_stock_movements_order`: `order_id` REFERENCES `orders(id)` ON DELETE RESTRICT ON UPDATE CASCADE.
+- The column stays `NULL` for movements that are not order-related (stock arrival, audit correction). Because orders are never deleted, `RESTRICT` costs nothing and guarantees a movement can never point at a vanished sale.
+- The existing `idx_stock_movements_order_id` still serves "every movement for this order".
+
+Both foreign keys are declared ahead of the `orders` table in `db/schema_draft.sql`; the draft runs with `FOREIGN_KEY_CHECKS = 0`, exactly as `stock_movements.user_id` already does for `admin_users`.
+
+### Design rules
+
+1. **The order number is random, not sequential**: `SRM-` plus six characters from `23456789ABCDEFGHJKMNPQRSTUVWXYZ` (31 symbols, about 887 million combinations, no lookalike 0/O/1/I/L). It is generated server-side, retried on duplicate key, never reused and never derived from `id`. Random avoids leaking daily order volume through the public site.
+2. **The order is created at Pay, not at payment**: `orders`, `order_items`, `stock_holds`, `coupon_redemptions` and `payments` are written in one transaction before Razorpay opens. A failed payment therefore leaves a complete, auditable record instead of orphans, and stock is protected by time-limited holds rather than by a cart table.
+3. **Money is frozen at creation**: `orders` and `order_items` money columns are integers in paise and are never recalculated. `total_paise = subtotal_paise - discount_paise + shipping_paise`, `line_total_paise = price_paise * quantity`, and `subtotal_paise` is the sum of the lines. Coupon edits, product price edits and shipping-setting edits never touch an existing order.
+4. **Snapshots are never updated**: customer name/email/phone, address, product name, category, sub-category, description, size, set type, colour, fabric, MRP, price paid, image path, courier name and coupon code are copies. Reports and invoices read only these copies, so they stay correct after anonymisation, renaming, re-categorising or price changes.
+5. **Orders are never hard-deleted**: there is no `deleted_at` and no delete route. Child tables use `ON DELETE RESTRICT` (except `stock_holds`, whose rows are disposable), so the history cannot be broken accidentally. Cancelled and rejected orders remain visible and searchable.
+6. **`used_count` is driven by `coupon_redemptions`**: at order creation, increment with the guarded update from Part B1 — `UPDATE coupons SET used_count = used_count + 1 WHERE id = ? AND is_active = 1 AND (usage_limit IS NULL OR used_count < usage_limit)` — and treat zero affected rows as "coupon no longer available", aborting the checkout. When an order is rejected, cancelled or fully refunded, do it in the same transaction as the status change: first claim the release with `UPDATE coupon_redemptions SET released_at = UTC_TIMESTAMP() WHERE order_id = ? AND released_at IS NULL`, and only if that affected one row decrement with `UPDATE coupons SET used_count = used_count - 1 WHERE id = ? AND used_count > 0`. Claiming before decrementing means a second cancel path cannot decrement twice. Undo of a reject reverses both (clear `released_at`, guarded increment); if the increment fails because the limit is now reached, the undo is refused and the transaction rolls back.
+7. **Coupon use is released on full money-back only**: reject and cancellation always release; a delivered order releases when its refunds add up to the full order total (the return-driven case is B2b's job). A partial refund keeps the redemption, because the customer kept the discount on what they kept.
+8. **Payment verification is server-side and idempotent**: verify the Razorpay signature before reading or writing anything, resolve the attempt by unique `razorpay_order_id`, and only act when the order is still `payment_pending`. The same webhook delivered twice changes nothing the second time, and the stock decrement, movement rows, hold deletion, payment update and status change are one transaction.
+9. **No payer data is stored**: no UPI IDs, card numbers, CVVs, bank references, payment methods or raw webhook bodies. Only `razorpay_order_id`, `razorpay_payment_id`, `razorpay_refund_id`, `event_type`, amounts and outcome are kept. Webhook bodies routinely contain UPI IDs, so they are parsed in memory and discarded.
+10. **Holds expire by time, not by a job**: availability ignores any hold with `expires_at <= UTC_NOW()` even if the cleanup job has not run. The job only tidies rows, closes abandoned orders and releases coupons; correctness never depends on its timing.
+11. **Late money is refunded, never resurrected**: a capture that arrives after expiry leaves the order `cancelled`, records `paid_at`, reopens the payment row to `captured`, and creates one `refunds` row of `kind = 'late_payment'`, `status = 'pending'`, full amount including shipping. The order is never moved back to `new` and stock is never re-taken.
+12. **Reject is reversible for exactly 10 minutes**: reject writes one history row with `undo_until = created_at + 10 minutes`, creates the full pending refund, optionally restocks, and suppresses the customer email. Undo restores the previous status, stamps `undone_at` (the history row is never deleted), deletes the still-pending refund, reverses the coupon release and takes back restocked units with a guarded decrement. If the refund was already marked done or the stock is gone, the undo is refused.
+13. **Shipped requires courier and tracking**: `courier_id` and `tracking_id` are both `NOT NULL` for the transition (they stay nullable in the table because pending orders have neither). `shipped_at` is stamped on success and `couriers.name` is copied into `courier_name`. Delivered requires `delivered_at`, which cannot precede `shipped_at`.
+14. **Status history is append-only**: every transition writes one row, including the creation row (`from_status IS NULL`), webhook-driven and job-driven changes (`admin_user_id IS NULL`) and undo. Rows are never edited or deleted; only `undone_at` is ever set on an existing row, once.
+15. **Refunds are manual**: nothing in the application calls the Razorpay refund API. A refund exists as `pending` until the owner performs it in the dashboard and ticks Refund done, which stamps `done_at` and `done_by` and stores the optional `razorpay_refund_id`. The Refund pending list is exactly `status = 'pending'` ordered by `requested_at`.
+16. **One order row per checkout**: the cart itself is not stored. Duplicate submissions of the same checkout are prevented by the browser disabling the Pay button plus the holds and coupon guards, not by a cart table.
+
+### Relationship Summary
+
+This continues items 1-19 of the Part A and Part B1 summaries.
+
+20. **Customers and Orders**: `customers` `1 : N` `orders` with `ON DELETE RESTRICT`. The order keeps its own name, email and phone snapshots, so anonymising a customer never damages an invoice or a report.
+21. **Orders and Items**: `orders` `1 : N` `order_items`, `ON DELETE RESTRICT`; each item also points at `products` and `product_variant_sizes` with `ON DELETE RESTRICT`. Snapshots in the item row are what reports read.
+22. **Orders and Status History**: `orders` `1 : N` `order_status_history`, `ON DELETE RESTRICT`; `admin_users` `1 : N` the same table via `admin_user_id` (`NULL` for system or customer actions). This is where the 10-minute reject undo lives.
+23. **Orders and Payments**: `orders` `1 : N` `payments` (retries are separate rows, one unique Razorpay order each), `ON DELETE RESTRICT`. Payment rows are financial evidence and are never deleted.
+24. **Webhook Events**: `payment_webhook_events` is standalone, linked to `payments` only loosely by `razorpay_payment_id`. It exists for deduplication, retry and diagnosis, not for reporting.
+25. **Orders, Payments and Refunds**: `orders` `1 : N` `refunds` and `payments` `1 : N` `refunds`, both `ON DELETE RESTRICT`; `admin_users` `1 : N` `refunds.done_by`. `refunds.cancellation_request_id` and `refunds.return_request_id` are loose columns that become foreign keys in B2b.
+26. **Coupons and Orders**: `coupons` `N : M` `orders` via `coupon_redemptions`, which is unique on `order_id` (one code per order) and also records `customer_id` for the repeat-use rule. `coupons.used_count` is the cached count of unreleased redemptions.
+27. **Stock and Orders**: `orders` `1 : N` `stock_holds` with `ON DELETE CASCADE` (holds are disposable reservations) and `orders` `1 : N` `stock_movements` with `ON DELETE RESTRICT` (the immutable movement log now points at the sale that caused it). This supersedes item 10, which described holds as keyed by a checkout reference.
+
+### Questions
+
+1. **Delivered date: day or timestamp?** — **Decided: a date, stored as `00:00:00` UTC in `orders.delivered_at`.** ADMIN_SPEC only asks the owner to "enter the delivered date", and the return window is counted in days, so storing a time would suggest a precision the UI never collects. `DATE(delivered_at)` is what the report and return window use.
+2. **What happens after a failed payment inside the hold window?** — **Decided: a new `payments` row per attempt, same order.** The customer retries against a fresh Razorpay order; the previous attempt stays `failed` with its code. The order keeps `payment_pending` and the original hold until it is paid or expires.
+3. **Does a late-paid, cancelled order show in the Orders table?** — **Decided: yes, as Cancelled.** `paid_at` is set because money actually arrived, and the default predicate is `status <> 'payment_pending' AND (status <> 'cancelled' OR paid_at IS NOT NULL)`. The refund is tracked in Refund pending, so hiding the order would hide the money.
+4. **How is the delayed reject email made idempotent?** — **Open, recommendation: add one nullable `email_sent_at` column to `order_status_history` in B2b.** The job runs every minute; without a marker it can send the same email twice or not at all after a restart. This part keeps the table to the agreed columns, so the marker is deliberately deferred and must land before the job is written.
+5. **Webhook event retention?** — **Open.** ADMIN_SPEC gives no figure. Recommendation: prune `payment_webhook_events` after 90 days, long enough to investigate chargebacks, and keep `payments`/`refunds` forever because they explain money.
+6. **`admin_cancel` versus `rejected`?** — **Decided: `admin_cancel` is only for an unpaid order the owner clears (duplicate or stuck checkout); anything with money taken and goods not shipped is a Reject.** This keeps "refund required" and "no refund required" distinguishable from `orders` alone.
+
+### Risks
+
+- **Order number collisions**: random six-character IDs can collide, and the unique index will reject the insert. Checkout must retry a few times and fail with a clear message rather than showing a raw duplicate-key error. If the alphabet is ever shortened, recheck the collision maths.
+- **`paid_at` is set twice in different stories**: on normal verification and on a late payment. Anything that treats `paid_at IS NOT NULL` as "this is a live sale" will be wrong for late payments; the status is the truth, `paid_at` only records money movement.
+- **Delayed email job is a single point of failure**: if it stops, customers never learn their order was rejected even though the refund is pending. Alerts on the age of the oldest unsent window are needed, and the job must be restart-safe (see Questions 4).
+- **Undo racing a manual refund**: the owner could refund in Razorpay and mark it done inside the 10-minute window. The undo must refuse when the refund row is already `done`; otherwise the order returns to `new` while the money is gone.
+- **Undo and restocked stock**: undo re-checks availability with a guarded decrement. If the units sold in between, the undo fails and the admin is stuck with a rejected order that still has stock returned. The message must offer the alternative (leave rejected, refund continues) instead of silently succeeding.
+- **`used_count` drift**: the counter is now driven by two paths (claim/increment, release/decrement) and one reversal (undo). Any code path that changes `released_at` without touching `used_count`, or the reverse, breaks the guard. Recompute from `coupon_redemptions` when in doubt, as flagged in B1.
+- **Coupon release on full return refunds is not yet wired**: until B2b sums return refunds, a delivered order whose goods are all returned will not release its coupon. The redemption row stays live, which is the safe direction (no overuse) but temporarily under-counts availability.
+- **Webhook ordering**: a capture can arrive before the local payment row is visible, or be retried after a partial failure. Events are therefore stored first with `processed_at IS NULL` and retried; an event with no matching payment gets `outcome = 'unmatched'` and must be investigated, not dropped.
+- **`payments` rows are updated in place**: there is no history of status changes per row, only `created_at`, `captured_at` and `failure_code`. If reconciliation ever needs every intermediate state, `payment_webhook_events` is the only record — another reason to keep it long enough.
+- **Reports depend on snapshots being written completely**: a missing `image_path` or `set_type_name` at checkout cannot be backfilled from the product later, because the product may have changed. The checkout write path must copy every report field in the same transaction.
+- **`description` is copied per line**: a long description repeated across items grows the order tables. It is the price of a stable report; if size becomes a problem, truncate at write time, not at report time.
+- **Case-insensitive order number lookups**: `utf8mb4_unicode_ci` means `SRM-7K2Q9M` and `srm-7k2q9m` are the same order. This is convenient for customers but means the displayed form is a formatting convention, not a separate identifier.
+- **No delete path at all**: a genuinely bogus test order can only be cancelled, never removed, and its `payments`/`refunds` rows stay. Development and staging must not share a database with production, or test noise will live forever.
+
