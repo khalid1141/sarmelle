@@ -1,5 +1,7 @@
 -- =============================================================================
--- Sarmelle Database Schema Draft - Part A: Catalogue and Stock
+-- Sarmelle Database Schema Draft
+-- Part A: Catalogue and Stock
+-- Part B1: Customers, Admin, Settings, Coupons
 -- Target Engine: MySQL 8.0+ / MariaDB 10.5+
 -- Storage Engine: InnoDB
 -- Character Set: utf8mb4
@@ -345,6 +347,210 @@ CREATE TABLE IF NOT EXISTS `stock_holds` (
     INDEX `idx_stock_holds_variant_expiry` (`product_variant_size_id`, `expires_at`),
     UNIQUE KEY `uq_stock_holds_checkout_variant` (`checkout_ref`, `product_variant_size_id`),
     CONSTRAINT `fk_stock_holds_variant_size` FOREIGN KEY (`product_variant_size_id`) REFERENCES `product_variant_sizes` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- PART B1: CUSTOMERS, ADMIN, SETTINGS, COUPONS
+-- -----------------------------------------------------------------------------
+
+-- -----------------------------------------------------------------------------
+-- 16. customers
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `customers` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `name` VARCHAR(150) NOT NULL,
+    `email` VARCHAR(255) NOT NULL COMMENT 'Login identifier; stored trimmed and lowercase',
+    `phone` VARCHAR(20) NOT NULL COMMENT 'Login identifier; digits only with country code',
+    `password_hash` VARCHAR(255) NOT NULL COMMENT 'Hashed password only; never plain text',
+    `is_active` TINYINT(1) NOT NULL DEFAULT 1 COMMENT '0 = blocked, cannot log in',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_customers_email` (`email`),
+    UNIQUE KEY `uq_customers_phone` (`phone`),
+    INDEX `idx_customers_is_active` (`is_active`),
+    INDEX `idx_customers_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 17. customer_addresses
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `customer_addresses` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `customer_id` BIGINT UNSIGNED NOT NULL,
+    `recipient_name` VARCHAR(150) NOT NULL,
+    `phone` VARCHAR(20) NOT NULL COMMENT 'Contact phone for delivery, digits only with country code',
+    `address_line1` VARCHAR(255) NOT NULL,
+    `address_line2` VARCHAR(255) NULL DEFAULT NULL,
+    `city` VARCHAR(100) NOT NULL,
+    `state` VARCHAR(100) NOT NULL,
+    `pincode` VARCHAR(10) NOT NULL COMMENT 'Text to keep leading zeros',
+    `is_default` TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'At most one default per customer (app rule)',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX `idx_customer_addresses_customer` (`customer_id`, `is_default`),
+    CONSTRAINT `fk_customer_addresses_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 18. admin_users (single owner account)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `admin_users` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `name` VARCHAR(150) NOT NULL,
+    `email` VARCHAR(255) NOT NULL COMMENT 'Stored trimmed and lowercase',
+    `password_hash` VARCHAR(255) NOT NULL COMMENT 'Hashed password only; never plain text',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_admin_users_email` (`email`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 19. admin_trusted_devices (devices that skip the new-device OTP)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `admin_trusted_devices` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `admin_user_id` BIGINT UNSIGNED NOT NULL,
+    `token_hash` CHAR(64) NOT NULL COMMENT 'SHA-256 hex of the device token; the token itself is never stored',
+    `label` VARCHAR(100) NULL DEFAULT NULL COMMENT 'Human label, e.g. Office laptop - Chrome',
+    `last_used_at` DATETIME NULL DEFAULT NULL COMMENT 'UTC instant of the last successful use',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_admin_trusted_devices_token` (`token_hash`),
+    INDEX `idx_admin_trusted_devices_admin` (`admin_user_id`),
+    CONSTRAINT `fk_admin_trusted_devices_admin` FOREIGN KEY (`admin_user_id`) REFERENCES `admin_users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 20. admin_otp_codes (new device and forgot password)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `admin_otp_codes` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `admin_user_id` BIGINT UNSIGNED NOT NULL,
+    `code_hash` CHAR(64) NOT NULL COMMENT 'SHA-256 hex of the OTP; the code itself is never stored',
+    `purpose` ENUM('new_device', 'forgot_password') NOT NULL,
+    `expires_at` DATETIME NOT NULL COMMENT 'UTC expiry',
+    `attempts` TINYINT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Failed verification attempts for this code',
+    `used_at` DATETIME NULL DEFAULT NULL COMMENT 'Set on successful use; a used code never works again',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX `idx_admin_otp_codes_admin_purpose` (`admin_user_id`, `purpose`, `expires_at`),
+    INDEX `idx_admin_otp_codes_expires_at` (`expires_at`),
+    CONSTRAINT `fk_admin_otp_codes_admin` FOREIGN KEY (`admin_user_id`) REFERENCES `admin_users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 21. admin_login_attempts (failed-attempt lockout)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `admin_login_attempts` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `admin_user_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Filled when the identifier matched an account',
+    `identifier` VARCHAR(255) NOT NULL COMMENT 'Email as typed, even when no account exists',
+    `ip` VARCHAR(45) NULL DEFAULT NULL COMMENT 'IPv4 or IPv6 text',
+    `is_success` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = successful attempt, 0 = failed',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX `idx_admin_login_attempts_identifier_time` (`identifier`, `created_at`),
+    INDEX `idx_admin_login_attempts_ip_time` (`ip`, `created_at`),
+    INDEX `idx_admin_login_attempts_created_at` (`created_at`),
+    CONSTRAINT `fk_admin_login_attempts_admin` FOREIGN KEY (`admin_user_id`) REFERENCES `admin_users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 22. admin_sessions
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `admin_sessions` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `admin_user_id` BIGINT UNSIGNED NOT NULL,
+    `session_token_hash` CHAR(64) NOT NULL COMMENT 'SHA-256 hex of the session token; the token itself is never stored',
+    `expires_at` DATETIME NOT NULL COMMENT 'UTC session timeout',
+    `ip` VARCHAR(45) NULL DEFAULT NULL,
+    `user_agent` VARCHAR(255) NULL DEFAULT NULL,
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_admin_sessions_token` (`session_token_hash`),
+    INDEX `idx_admin_sessions_admin_expiry` (`admin_user_id`, `expires_at`),
+    INDEX `idx_admin_sessions_expires_at` (`expires_at`),
+    CONSTRAINT `fk_admin_sessions_admin` FOREIGN KEY (`admin_user_id`) REFERENCES `admin_users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 23. customer_sessions
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `customer_sessions` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `customer_id` BIGINT UNSIGNED NOT NULL,
+    `session_token_hash` CHAR(64) NOT NULL COMMENT 'SHA-256 hex of the session token; the token itself is never stored',
+    `expires_at` DATETIME NOT NULL COMMENT 'UTC session timeout',
+    `ip` VARCHAR(45) NULL DEFAULT NULL,
+    `user_agent` VARCHAR(255) NULL DEFAULT NULL,
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_customer_sessions_token` (`session_token_hash`),
+    INDEX `idx_customer_sessions_customer_expiry` (`customer_id`, `expires_at`),
+    INDEX `idx_customer_sessions_expires_at` (`expires_at`),
+    CONSTRAINT `fk_customer_sessions_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 24. settings (key/value, one row per setting)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `settings` (
+    `setting_key` VARCHAR(64) NOT NULL COMMENT 'Natural primary key; the exact key list is fixed in DATABASE.md',
+    `setting_value` TEXT NULL DEFAULT NULL COMMENT 'Always text; the application casts to int/bool per key',
+    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`setting_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 25. couriers
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `couriers` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `name` VARCHAR(100) NOT NULL,
+    `tracking_url_template` VARCHAR(255) NOT NULL COMMENT 'Contains a {tracking_id} placeholder',
+    `is_default` TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'Only one default at a time (app rule)',
+    `is_active` TINYINT(1) NOT NULL DEFAULT 1 COMMENT '0 = hidden from the order form',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_couriers_name` (`name`),
+    INDEX `idx_couriers_is_default` (`is_default`),
+    INDEX `idx_couriers_is_active` (`is_active`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 26. coupons
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `coupons` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `code` VARCHAR(32) NOT NULL COMMENT 'Stored uppercase',
+    `type` ENUM('percent', 'amount') NOT NULL COMMENT 'amount = fixed rupees off, stored in paise',
+    `value` INT UNSIGNED NOT NULL COMMENT 'Percent (1-100) or paise, depending on type',
+    `expires_at` DATETIME NULL DEFAULT NULL COMMENT 'UTC expiry; NULL = no expiry',
+    `min_order_paise` BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    `max_discount_paise` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Cap for percent coupons; NULL = no cap',
+    `usage_limit` INT UNSIGNED NULL DEFAULT NULL COMMENT 'Total redemptions allowed; NULL = unlimited',
+    `used_count` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Redemptions so far; only orders count',
+    `is_active` TINYINT(1) NOT NULL DEFAULT 1 COMMENT 'On/off switch',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_coupons_code` (`code`),
+    INDEX `idx_coupons_is_active_expiry` (`is_active`, `expires_at`),
+    CONSTRAINT `chk_coupons_value` CHECK (`value` > 0),
+    CONSTRAINT `chk_coupons_percent_max` CHECK (`type` <> 'percent' OR `value` <= 100)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 27. activity_log (append-only admin audit log, 3-month retention)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `activity_log` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `admin_user_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'NULL only for system-generated entries',
+    `action` VARCHAR(50) NOT NULL COMMENT 'e.g. product.update, order.cancel, refund.done',
+    `entity_type` VARCHAR(50) NOT NULL COMMENT 'e.g. product, order, coupon',
+    `entity_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+    `old_value` TEXT NULL DEFAULT NULL COMMENT 'JSON-encoded snapshot before the change',
+    `new_value` TEXT NULL DEFAULT NULL COMMENT 'JSON-encoded snapshot after the change',
+    `ip` VARCHAR(45) NULL DEFAULT NULL,
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX `idx_activity_log_entity` (`entity_type`, `entity_id`),
+    INDEX `idx_activity_log_admin_time` (`admin_user_id`, `created_at`),
+    INDEX `idx_activity_log_created_at` (`created_at`),
+    CONSTRAINT `fk_activity_log_admin` FOREIGN KEY (`admin_user_id`) REFERENCES `admin_users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;
