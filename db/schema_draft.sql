@@ -392,7 +392,23 @@ CREATE TABLE IF NOT EXISTS `customer_addresses` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
--- 18. admin_users (single owner account)
+-- 18. customer_password_resets (emailed one-time reset link)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `customer_password_resets` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `customer_id` BIGINT UNSIGNED NOT NULL,
+    `token_hash` CHAR(64) NOT NULL COMMENT 'SHA-256 hex of the reset token; the token itself is never stored',
+    `expires_at` DATETIME NOT NULL COMMENT 'UTC expiry, 30 minutes after creation',
+    `used_at` DATETIME NULL DEFAULT NULL COMMENT 'Set on successful use; a used token never works again',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_customer_password_resets_token` (`token_hash`),
+    INDEX `idx_customer_password_resets_customer_expiry` (`customer_id`, `expires_at`),
+    INDEX `idx_customer_password_resets_expires_at` (`expires_at`),
+    CONSTRAINT `fk_customer_password_resets_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 19. admin_users (single owner account)
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `admin_users` (
     `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -405,7 +421,7 @@ CREATE TABLE IF NOT EXISTS `admin_users` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
--- 19. admin_trusted_devices (devices that skip the new-device OTP)
+-- 20. admin_trusted_devices (devices that skip the new-device OTP)
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `admin_trusted_devices` (
     `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -413,6 +429,7 @@ CREATE TABLE IF NOT EXISTS `admin_trusted_devices` (
     `token_hash` CHAR(64) NOT NULL COMMENT 'SHA-256 hex of the device token; the token itself is never stored',
     `label` VARCHAR(100) NULL DEFAULT NULL COMMENT 'Human label, e.g. Office laptop - Chrome',
     `last_used_at` DATETIME NULL DEFAULT NULL COMMENT 'UTC instant of the last successful use',
+    `expires_at` DATETIME NOT NULL COMMENT 'UTC expiry, 30 days after creation; an expired device is challenged again',
     `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY `uq_admin_trusted_devices_token` (`token_hash`),
     INDEX `idx_admin_trusted_devices_admin` (`admin_user_id`),
@@ -420,7 +437,7 @@ CREATE TABLE IF NOT EXISTS `admin_trusted_devices` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
--- 20. admin_otp_codes (new device and forgot password)
+-- 21. admin_otp_codes (new device and forgot password)
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `admin_otp_codes` (
     `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -437,23 +454,22 @@ CREATE TABLE IF NOT EXISTS `admin_otp_codes` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
--- 21. admin_login_attempts (failed-attempt lockout)
+-- 22. login_attempts (failed-attempt lockout and request throttling)
 -- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `admin_login_attempts` (
+CREATE TABLE IF NOT EXISTS `login_attempts` (
     `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    `admin_user_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Filled when the identifier matched an account',
-    `identifier` VARCHAR(255) NOT NULL COMMENT 'Email as typed, even when no account exists',
+    `account_type` ENUM('admin', 'customer') NOT NULL,
+    `identifier` VARCHAR(255) NOT NULL COMMENT 'Email or phone as typed, even when no account exists',
     `ip` VARCHAR(45) NULL DEFAULT NULL COMMENT 'IPv4 or IPv6 text',
     `is_success` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = successful attempt, 0 = failed',
     `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    INDEX `idx_admin_login_attempts_identifier_time` (`identifier`, `created_at`),
-    INDEX `idx_admin_login_attempts_ip_time` (`ip`, `created_at`),
-    INDEX `idx_admin_login_attempts_created_at` (`created_at`),
-    CONSTRAINT `fk_admin_login_attempts_admin` FOREIGN KEY (`admin_user_id`) REFERENCES `admin_users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+    INDEX `idx_login_attempts_account_identifier_time` (`account_type`, `identifier`, `created_at`),
+    INDEX `idx_login_attempts_ip_time` (`ip`, `created_at`),
+    INDEX `idx_login_attempts_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
--- 22. admin_sessions
+-- 23. admin_sessions
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `admin_sessions` (
     `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -467,23 +483,6 @@ CREATE TABLE IF NOT EXISTS `admin_sessions` (
     INDEX `idx_admin_sessions_admin_expiry` (`admin_user_id`, `expires_at`),
     INDEX `idx_admin_sessions_expires_at` (`expires_at`),
     CONSTRAINT `fk_admin_sessions_admin` FOREIGN KEY (`admin_user_id`) REFERENCES `admin_users` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- -----------------------------------------------------------------------------
--- 23. customer_sessions
--- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `customer_sessions` (
-    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    `customer_id` BIGINT UNSIGNED NOT NULL,
-    `session_token_hash` CHAR(64) NOT NULL COMMENT 'SHA-256 hex of the session token; the token itself is never stored',
-    `expires_at` DATETIME NOT NULL COMMENT 'UTC session timeout',
-    `ip` VARCHAR(45) NULL DEFAULT NULL,
-    `user_agent` VARCHAR(255) NULL DEFAULT NULL,
-    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY `uq_customer_sessions_token` (`session_token_hash`),
-    INDEX `idx_customer_sessions_customer_expiry` (`customer_id`, `expires_at`),
-    INDEX `idx_customer_sessions_expires_at` (`expires_at`),
-    CONSTRAINT `fk_customer_sessions_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
@@ -524,7 +523,8 @@ CREATE TABLE IF NOT EXISTS `coupons` (
     `min_order_paise` BIGINT UNSIGNED NOT NULL DEFAULT 0,
     `max_discount_paise` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Cap for percent coupons; NULL = no cap',
     `usage_limit` INT UNSIGNED NULL DEFAULT NULL COMMENT 'Total redemptions allowed; NULL = unlimited',
-    `used_count` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Redemptions so far; only orders count',
+    `used_count` INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Redemptions so far; only orders count, and a cancelled, rejected or fully refunded order releases its use',
+    `allow_repeat_use` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '0 = each customer may use the code once, 1 = repeat use allowed',
     `is_active` TINYINT(1) NOT NULL DEFAULT 1 COMMENT 'On/off switch',
     `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

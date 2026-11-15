@@ -479,7 +479,8 @@ Nothing else in this part is stored either: no UPI IDs, no card numbers, no paym
 
 All Part A conventions apply unchanged (InnoDB, `utf8mb4_unicode_ci`, `snake_case`, UTC timestamps, paise integers, soft deletes only where ADMIN_SPEC asks for them). Additions:
 
-- **Hashed secrets**: passwords are stored with `password_hash()` only; OTPs, device tokens and session tokens are stored as SHA-256 hex (`CHAR(64)`), never in clear text.
+- **Hashed secrets**: passwords are stored with `password_hash()` only; OTPs, device tokens, session tokens and password-reset tokens are stored as SHA-256 hex (`CHAR(64)`), never in clear text.
+- **Sessions**: customers use PHP's built-in sessions only — there is no customer session table. The session cookie is `HttpOnly`, `Secure` and `SameSite=Lax`, and the session ID is regenerated on login. Admin sessions are different: `admin_sessions` is kept so a password change or reset can end every admin session at once and the timeout is enforced on the server.
 - **Two login identifiers**: a customer can log in with email **or** phone using the same password, so both columns are unique and normalised before every write.
 - **`settings` exception**: the key/value table uses `setting_key` (`VARCHAR(64)`) as its natural primary key instead of a surrogate `id`, because rows are referenced by key in code and never by a numeric ID.
 - **Retention**: `activity_log` keeps 3 months and is trimmed by a scheduled job.
@@ -487,13 +488,13 @@ All Part A conventions apply unchanged (InnoDB, `utf8mb4_unicode_ci`, `snake_cas
 ### Table Specifications
 
 #### 16. `customers`
-- **Purpose**: Storefront customer account. One row per customer; login accepts email **or** phone with the same password. Created on first order or first account creation.
+- **Purpose**: Storefront customer account. One row per customer; login accepts email **or** phone with the same password. Created on first order or first account creation. An account deletion request anonymises the row instead of deleting it (Design rule 14), so order snapshots keep pointing at a real customer ID.
 - **Columns**:
   - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
   - `name`: VARCHAR(150), NOT NULL, no default
-  - `email`: VARCHAR(255), NOT NULL, no default (stored trimmed and lowercase)
-  - `phone`: VARCHAR(20), NOT NULL, no default (text, digits with country code; never numeric, so leading zeros and `+` survive)
-  - `password_hash`: VARCHAR(255), NOT NULL, no default (hashed password only)
+  - `email`: VARCHAR(255), NOT NULL, no default (stored trimmed and lowercase; on deletion set to `deleted-<id>@invalid`)
+  - `phone`: VARCHAR(20), NOT NULL, no default (text, digits with country code; never numeric, so leading zeros and `+` survive; on deletion set to a placeholder that cannot be a real number)
+  - `password_hash`: VARCHAR(255), NOT NULL, no default (hashed password only; on deletion replaced with a value no password can match)
   - `is_active`: TINYINT(1), NOT NULL, DEFAULT 1 (0 = blocked, cannot log in)
   - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
   - `updated_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -525,7 +526,24 @@ All Part A conventions apply unchanged (InnoDB, `utf8mb4_unicode_ci`, `snake_cas
 - **Indexes**: `idx_customer_addresses_customer` (`customer_id`, `is_default`).
 - **Enum Values**: None.
 
-#### 18. `admin_users`
+#### 18. `customer_password_resets`
+- **Purpose**: Backs forgot-password for customers. The customer enters their email, receives an emailed one-time link, and sets a new password with it. Only a hash of the token is stored, so a leaked database dump cannot be used to take over accounts.
+- **Columns**:
+  - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
+  - `customer_id`: BIGINT UNSIGNED, NOT NULL, no default
+  - `token_hash`: CHAR(64), NOT NULL, no default (SHA-256 hex; the token itself is never stored)
+  - `expires_at`: DATETIME, NOT NULL, no default (UTC expiry, 30 minutes after creation)
+  - `used_at`: DATETIME, NULL, DEFAULT NULL (set on success; a used token never works again)
+  - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
+- **Primary Key**: `id`
+- **Foreign Keys**:
+  - `fk_customer_password_resets_customer`: `customer_id` REFERENCES `customers(id)` ON DELETE CASCADE ON UPDATE CASCADE
+- **Unique Constraints**: `uq_customer_password_resets_token` (`token_hash`).
+- **Indexes**: `idx_customer_password_resets_customer_expiry` (`customer_id`, `expires_at`), `idx_customer_password_resets_expires_at` (`expires_at`).
+- **Enum Values**: None.
+- **Rules**: A reset read requires `expires_at > UTC_NOW() AND used_at IS NULL`; using a token sets `used_at` and, in the same transaction, replaces `password_hash` and invalidates any other outstanding reset rows for that customer. This table cannot sign the customer out elsewhere: customer sessions are PHP sessions, so any "sign out other devices" behaviour belongs to the session store, not to this schema.
+
+#### 19. `admin_users`
 - **Purpose**: The single owner account for `admin.sarmelle.com`. ADMIN_SPEC defines one owner, so the table is expected to hold exactly one row; there is no role column.
 - **Columns**:
   - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
@@ -539,16 +557,17 @@ All Part A conventions apply unchanged (InnoDB, `utf8mb4_unicode_ci`, `snake_cas
 - **Unique Constraints**: `uq_admin_users_email` (`email`).
 - **Indexes**: None beyond the unique key.
 - **Enum Values**: None.
-- **Referenced by**: `stock_movements.user_id` (Part A, `ON DELETE RESTRICT`), plus every table below.
+- **Referenced by**: `stock_movements.user_id` (Part A, `ON DELETE RESTRICT`), plus `admin_trusted_devices`, `admin_otp_codes` and `admin_sessions` below. `login_attempts` deliberately has no foreign key.
 
-#### 19. `admin_trusted_devices`
-- **Purpose**: Devices that have already passed the new-device email OTP, so the owner is not challenged on every login. Only a hash of the device token is kept.
+#### 20. `admin_trusted_devices`
+- **Purpose**: Devices that have already passed the new-device email OTP, so the owner is not challenged on every login. Only a hash of the device token is kept. Each trust expires after 30 days, and a password change or reset deletes all trusted devices and all admin sessions.
 - **Columns**:
   - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
   - `admin_user_id`: BIGINT UNSIGNED, NOT NULL, no default
   - `token_hash`: CHAR(64), NOT NULL, no default (SHA-256 hex; the token itself is never stored)
   - `label`: VARCHAR(100), NULL, DEFAULT NULL (human label such as "Office laptop - Chrome")
   - `last_used_at`: DATETIME, NULL, DEFAULT NULL (UTC instant of the last successful use)
+  - `expires_at`: DATETIME, NOT NULL, no default (UTC expiry, 30 days after creation; an expired device is challenged again)
   - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
 - **Primary Key**: `id`
 - **Foreign Keys**:
@@ -556,8 +575,9 @@ All Part A conventions apply unchanged (InnoDB, `utf8mb4_unicode_ci`, `snake_cas
 - **Unique Constraints**: `uq_admin_trusted_devices_token` (`token_hash`).
 - **Indexes**: `idx_admin_trusted_devices_admin` (`admin_user_id`).
 - **Enum Values**: None.
+- **Expiry**: A trusted device is valid only while `expires_at > UTC_NOW()`; after 30 days the owner is challenged with a new-device OTP and the row is replaced. A password change or reset deletes every row for the account in the same transaction that deletes its `admin_sessions` rows — that delete-all is the revocation path; there is no per-device revoke screen in the ADMIN_SPEC scope.
 
-#### 20. `admin_otp_codes`
+#### 21. `admin_otp_codes`
 - **Purpose**: One-time codes for the two ADMIN_SPEC flows: new-device verification and forgot-password. Codes are hashed, single-use and time-limited.
 - **Columns**:
   - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
@@ -575,24 +595,31 @@ All Part A conventions apply unchanged (InnoDB, `utf8mb4_unicode_ci`, `snake_cas
 - **Indexes**: `idx_admin_otp_codes_admin_purpose` (`admin_user_id`, `purpose`, `expires_at`), `idx_admin_otp_codes_expires_at` (`expires_at`).
 - **Enum Values**: `purpose` = `new_device`, `forgot_password`.
 
-#### 21. `admin_login_attempts`
-- **Purpose**: Raw record of every admin login attempt, successful or not, used to enforce the failed-attempt lockout in ADMIN_SPEC. `identifier` is stored as typed so attempts on non-existent emails are also rate-limited.
+#### 22. `login_attempts`
+- **Purpose**: Raw record of every admin and customer login attempt, successful or not, used to enforce the failed-attempt lockout. `identifier` is stored as typed so attempts on non-existent emails or phones are also rate-limited. The table has no foreign key on purpose: an attempt row must survive account anonymisation, and it must be recordable when no account exists. `account_type` keeps the two policies separate, so an admin lockout can never be triggered by customer traffic and vice versa.
 - **Columns**:
   - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
-  - `admin_user_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL (filled when the identifier matched an account)
-  - `identifier`: VARCHAR(255), NOT NULL, no default (email as typed, even when no account exists)
+  - `account_type`: ENUM('admin', 'customer'), NOT NULL, no default
+  - `identifier`: VARCHAR(255), NOT NULL, no default (email or phone as typed, even when no account exists)
   - `ip`: VARCHAR(45), NULL, DEFAULT NULL (IPv4 or IPv6 text)
   - `is_success`: TINYINT(1), NOT NULL, DEFAULT 0 (1 = success, 0 = failure)
   - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
 - **Primary Key**: `id`
-- **Foreign Keys**:
-  - `fk_admin_login_attempts_admin`: `admin_user_id` REFERENCES `admin_users(id)` ON DELETE CASCADE ON UPDATE CASCADE
+- **Foreign Keys**: None, deliberately (see Purpose).
 - **Unique Constraints**: None (one row per attempt).
-- **Indexes**: `idx_admin_login_attempts_identifier_time` (`identifier`, `created_at`), `idx_admin_login_attempts_ip_time` (`ip`, `created_at`), `idx_admin_login_attempts_created_at` (`created_at`).
-- **Enum Values**: None.
+- **Indexes**: `idx_login_attempts_account_identifier_time` (`account_type`, `identifier`, `created_at`), `idx_login_attempts_ip_time` (`ip`, `created_at`), `idx_login_attempts_created_at` (`created_at`).
+- **Enum Values**: `account_type` = `admin`, `customer`.
+- **Throttling limits** (code constants, not `settings` keys, so they cannot be changed from the admin panel and need no migration):
 
-#### 22. `admin_sessions`
-- **Purpose**: Server-side admin sessions with an explicit timeout, so a session can be expired or revoked from the database instead of only on the client. Stores a hash of the session token plus the request context.
+| Limit | Value | Counted by |
+| --- | --- | --- |
+| Failed logins per identifier | 5 in 15 minutes → that account is locked for 15 minutes | `account_type` + `identifier` + `created_at` |
+| Failed logins per IP | 20 per hour → that IP is blocked | `ip` + `created_at` |
+| OTP requests per account | 3 per hour | `account_type` + `identifier` + `created_at` |
+| Password-reset requests per account | 3 per hour | `account_type` + `identifier` + `created_at` |
+
+#### 23. `admin_sessions`
+- **Purpose**: Server-side admin sessions with an explicit timeout, so a session can be expired or revoked from the database instead of only on the client. Kept (unlike customer sessions) because a password change or reset must end every admin session, and because the timeout is enforced on the server. Stores a hash of the session token plus the request context.
 - **Columns**:
   - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
   - `admin_user_id`: BIGINT UNSIGNED, NOT NULL, no default
@@ -607,23 +634,7 @@ All Part A conventions apply unchanged (InnoDB, `utf8mb4_unicode_ci`, `snake_cas
 - **Unique Constraints**: `uq_admin_sessions_token` (`session_token_hash`).
 - **Indexes**: `idx_admin_sessions_admin_expiry` (`admin_user_id`, `expires_at`), `idx_admin_sessions_expires_at` (`expires_at`).
 - **Enum Values**: None.
-
-#### 23. `customer_sessions`
-- **Purpose**: The customer-side equivalent of `admin_sessions`, so a customer can stay logged in across visits and can be logged out server-side. See the session question below: PHP's native session handling may make this table unnecessary.
-- **Columns**:
-  - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
-  - `customer_id`: BIGINT UNSIGNED, NOT NULL, no default
-  - `session_token_hash`: CHAR(64), NOT NULL, no default (SHA-256 hex; the token itself is never stored)
-  - `expires_at`: DATETIME, NOT NULL, no default (UTC session timeout)
-  - `ip`: VARCHAR(45), NULL, DEFAULT NULL
-  - `user_agent`: VARCHAR(255), NULL, DEFAULT NULL
-  - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
-- **Primary Key**: `id`
-- **Foreign Keys**:
-  - `fk_customer_sessions_customer`: `customer_id` REFERENCES `customers(id)` ON DELETE CASCADE ON UPDATE CASCADE
-- **Unique Constraints**: `uq_customer_sessions_token` (`session_token_hash`).
-- **Indexes**: `idx_customer_sessions_customer_expiry` (`customer_id`, `expires_at`), `idx_customer_sessions_expires_at` (`expires_at`).
-- **Enum Values**: None.
+- **Revocation**: A password change or password reset deletes all of the account's `admin_sessions` rows and all of its `admin_trusted_devices` rows in the same transaction, so the old password's sessions die immediately instead of waiting for `expires_at`.
 
 #### 24. `settings`
 - **Purpose**: Single-row-per-key storefront and checkout settings edited in ADMIN_SPEC section 11, so the owner can change them without a rebuild. Values are always text and cast by the application.
@@ -666,7 +677,7 @@ All Part A conventions apply unchanged (InnoDB, `utf8mb4_unicode_ci`, `snake_cas
 - **Enum Values**: None.
 
 #### 26. `coupons`
-- **Purpose**: Discount codes created and switched on/off in ADMIN_SPEC section 10. The redemption record that links a coupon to an order is added in Part B2; at launch `used_count` tracks redemptions.
+- **Purpose**: Discount codes created and switched on/off in ADMIN_SPEC section 10. The redemption record that links a coupon to an order is added in Part B2; at launch `used_count` tracks redemptions. By default each customer may use a code once; `allow_repeat_use = 1` lifts that per-customer limit. Only one coupon code applies per order, so codes never stack.
 - **Columns**:
   - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
   - `code`: VARCHAR(32), NOT NULL, no default (stored uppercase)
@@ -676,7 +687,8 @@ All Part A conventions apply unchanged (InnoDB, `utf8mb4_unicode_ci`, `snake_cas
   - `min_order_paise`: BIGINT UNSIGNED, NOT NULL, DEFAULT 0
   - `max_discount_paise`: BIGINT UNSIGNED, NULL, DEFAULT NULL (cap for percent coupons; NULL = no cap)
   - `usage_limit`: INT UNSIGNED, NULL, DEFAULT NULL (total allowed redemptions; NULL = unlimited)
-  - `used_count`: INT UNSIGNED, NOT NULL, DEFAULT 0 (incremented only when an order is placed)
+  - `used_count`: INT UNSIGNED, NOT NULL, DEFAULT 0 (incremented only when an order is placed; decremented again when that order is cancelled, rejected or fully refunded)
+  - `allow_repeat_use`: TINYINT(1), NOT NULL, DEFAULT 0 (0 = each customer may use the code once, 1 = repeat use allowed)
   - `is_active`: TINYINT(1), NOT NULL, DEFAULT 1 (on/off switch)
   - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
   - `updated_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -686,6 +698,7 @@ All Part A conventions apply unchanged (InnoDB, `utf8mb4_unicode_ci`, `snake_cas
 - **Indexes**: `idx_coupons_is_active_expiry` (`is_active`, `expires_at`).
 - **Enum Values**: `type` = `percent`, `amount`.
 - **CHECK constraints**: `chk_coupons_value` (`value > 0`), `chk_coupons_percent_max` (`type <> 'percent' OR value <= 100`). Both are re-checked in the application because CHECK is ignored on MySQL 5.7.
+- **Rules**: One code per order — a second code is rejected rather than combined. Coupon eligibility is checked against the Part B2 redemption table: if `allow_repeat_use = 0`, an existing redemption for the same customer rejects the code; if it is `1`, repeat use is allowed. `usage_limit` remains the global cap.
 
 #### 27. `activity_log`
 - **Purpose**: Append-only admin audit trail required by ADMIN_SPEC section 2 (who, what, when, old value to new value). Every critical admin action writes one row; rows are never edited.
@@ -709,45 +722,53 @@ All Part A conventions apply unchanged (InnoDB, `utf8mb4_unicode_ci`, `snake_cas
 
 ### Design rules
 1. **No payment credentials, ever**: UPI IDs, card numbers, CVVs and bank details are never stored in any table. Only Razorpay payment and refund IDs are kept (Part B2), as ADMIN_SPEC section 2 requires.
-2. **No plain-text secrets**: Passwords exist only as `password_hash` output. OTP codes, device tokens and session tokens exist only as SHA-256 hashes and are compared by hashing the presented value. Secrets are never written to `activity_log` either.
+2. **No plain-text secrets**: Passwords exist only as `password_hash` output. OTP codes, device tokens, session tokens and password-reset tokens exist only as SHA-256 hashes and are compared by hashing the presented value. Secrets are never written to `activity_log` either.
 3. **Login identifiers are unique and normalised**: Email is trimmed and lowercased, phone is reduced to digits plus country code before insert or lookup. Without this, the same person can create two accounts that the unique indexes cannot see as duplicates.
 4. **One owner account**: `admin_users` is designed for exactly one row. There is no role column because ADMIN_SPEC grants the owner full access; adding staff later needs a role column and a new migration.
 5. **One default address per customer**: At most one `customer_addresses` row per customer has `is_default = 1`; setting a new default clears the previous one in the same transaction. MySQL cannot express this as a partial unique index, so it is an app rule.
 6. **One default courier**: At most one `couriers` row has `is_default = 1`, set in a single transaction that clears the old default. An inactive courier cannot be the default; if the default is deactivated, the owner must pick another before the next shipment.
 7. **Coupon maths lives in one place**: `percent` applies to the order subtotal, is capped by `max_discount_paise` when set, and only applies once `min_order_paise` is met. `amount` is a flat paise deduction. Discount never exceeds the subtotal.
-8. **Coupon usage is atomic**: Checkout increments `used_count` with a conditional update — `UPDATE coupons SET used_count = used_count + 1 WHERE id = ? AND is_active = 1 AND (usage_limit IS NULL OR used_count < usage_limit)` — and treats zero affected rows as "coupon no longer available". This is the guard against two orders using the last redemption at once.
+8. **Coupon usage is atomic**: Checkout increments `used_count` with a conditional update — `UPDATE coupons SET used_count = used_count + 1 WHERE id = ? AND is_active = 1 AND (usage_limit IS NULL OR used_count < usage_limit)` — and treats zero affected rows as "coupon no longer available". This is the guard against two orders using the last redemption at once. The reverse move is just as atomic: when an order is cancelled, rejected or fully refunded, `used_count` is decremented by one in the same transaction that changes the order status, driven by that order's redemption row (Part B2).
 9. **Settings are read, not trusted blindly**: Values are text, cast per key by the application, and validated against the fixed key list. Money settings are integers in paise. A change applies on the next request; nothing is cached beyond the request that reads it.
-10. **Sessions and OTPs expire by time**: Every authentication read requires `expires_at > UTC_NOW()`, and OTP reads also require `used_at IS NULL`. Expired rows are removed by the same scheduled job that prunes stock holds; correctness never depends on the cleanup having run.
+10. **Sessions, OTPs, reset links and device trusts expire by time**: Every authentication read requires `expires_at > UTC_NOW()`; OTP and password-reset reads also require `used_at IS NULL`. Expired rows are removed by the same scheduled job that prunes stock holds; correctness never depends on the cleanup having run.
 11. **Activity log is append-only**: The application only inserts. Rows are never updated and are deleted only by the 3-month retention job. Old and new values are JSON text snapshots, not foreign keys, so the entry still reads correctly after the record changes or is deleted.
 12. **Hashed lookups use exact indexes**: `token_hash`, `code_hash` and `session_token_hash` are fixed-length `CHAR(64)` with unique or composite indexes so every verification is a single indexed lookup, not a scan.
+13. **No public admin registration**: `admin_users` is never written from a public form. There is no signup, invite or self-service registration route; the first (and only) admin is created by a one-time setup script that is run manually and then removed or disabled. Password changes happen only inside an authenticated admin session or through the email OTP reset flow.
+14. **Customer account deletion means anonymisation**: The `customers` row is kept, because orders point at it and keep their own snapshots. Deleting an account blanks `name`, sets `email` to `deleted-<id>@invalid`, sets `phone` to a placeholder that cannot be a real number, replaces `password_hash` with a value no password can match, sets `is_active = 0`, and deletes the customer's `customer_addresses` rows and outstanding `customer_password_resets` rows in the same transaction. Order rows and their address/price snapshots are untouched, so invoices and history still read correctly.
 
 ### Relationship Summary
 This continues the Part A summary (items 1-11).
 
-12. **Customers and Addresses**: `customers` `1 : N` `customer_addresses` with `ON DELETE CASCADE`; at most one address per customer is the default.
-13. **Customer Sessions**: `customers` `1 : N` `customer_sessions` with `ON DELETE CASCADE`; only hashes are stored and expired rows are pruned.
-14. **Admin Account**: `admin_users` `1 : N` `admin_trusted_devices`, `1 : N` `admin_otp_codes`, `1 : N` `admin_login_attempts`, `1 : N` `admin_sessions`, all `ON DELETE CASCADE` (owner-only data has no meaning without the account).
+12. **Customers and Addresses**: `customers` `1 : N` `customer_addresses` with `ON DELETE CASCADE`; at most one address per customer is the default. Account deletion anonymises the customer row and deletes its addresses, so this cascade is only used by a hard delete that the application does not expose.
+13. **Customer Password Resets**: `customers` `1 : N` `customer_password_resets` with `ON DELETE CASCADE`; only token hashes are stored, and used or expired rows are pruned. There is no customer session table: customer sessions are PHP sessions and never appear in the database.
+14. **Admin Account**: `admin_users` `1 : N` `admin_trusted_devices`, `1 : N` `admin_otp_codes`, `1 : N` `admin_sessions`, all `ON DELETE CASCADE` (owner-only data has no meaning without the account). A password change or reset clears trusted devices and admin sessions together.
 15. **Admin and Audit**: `admin_users` `1 : N` `stock_movements` (`ON DELETE RESTRICT`, Part A) and `1 : N` `activity_log` (`ON DELETE RESTRICT`); both logs outlive any account change and are never rewritten.
 16. **Settings**: standalone key/value table with no foreign keys; read by the storefront, checkout and admin screens.
 17. **Couriers**: standalone in Part B1; from Part B2 `couriers` `1 : N` `orders` (the default is pre-selected on the order form, and each order keeps the tracking ID and the template used).
-18. **Coupons**: standalone in Part B1; from Part B2 a redemption table links `coupons` `N : M` `orders` and is the authoritative record of which order used which code. `coupons.used_count` is the fast counter for that table.
-19. **Login Attempts to Accounts**: `admin_login_attempts.admin_user_id` is `NULL` for unknown identifiers and set when the typed email matched the owner account; the lockout query reads by `identifier` and `ip`, not only by account.
+18. **Coupons**: standalone in Part B1; from Part B2 a redemption table links `coupons` `N : M` `orders` and is the authoritative record of which order used which code. `coupons.used_count` is the fast counter for that table. The redemption table is also what enforces "once per customer unless `allow_repeat_use = 1`" and what releases a use when an order is cancelled, rejected or fully refunded.
+19. **Login Attempts to Accounts**: `login_attempts` has no foreign key. `account_type` plus `identifier` is the link, and it is applied to the raw typed value, so failed attempts on unknown emails or phones are still counted and no account can be enumerated from the table. Attempt rows survive customer anonymisation and are removed only by the retention job.
 
 ### Questions
-1. **PHP sessions or these tables?** Both `admin_sessions` and `customer_sessions` are specified above, but I think PHP's own session handling is the better fit at launch: `session_start()` already issues and validates the cookie, rotates the ID and can store data server-side, so we would not be hand-rolling token generation. The two tables only earn their keep if we want to list and revoke active sessions, or force a logout from the database. My recommendation: use PHP sessions, drop `customer_sessions`, and keep `admin_sessions` only if the owner wants a "signed-in devices" screen. Your call before Part B2.
-2. **Customer password reset**: ADMIN_SPEC defines forgot-password by email OTP for the admin only. Customers have no stated reset path. An emailed one-time link keeps `admin_otp_codes` untouched; a customer OTP would need its own table or a nullable owner column. Decide before customer login is built.
-3. **Lockout numbers**: ADMIN_SPEC requires failed-attempt lockout but gives no threshold. `admin_login_attempts` stores raw attempts, so any policy (count, window, lockout length, per-IP as well as per-account) can be applied later without a migration.
-4. **Trusted device lifetime**: The tables support an unlimited number of devices with `last_used_at`, but not how long a device stays trusted or whether the owner can revoke one. Need a number (for example 30 or 90 days) and whether a revoke screen is in scope.
-5. **Coupon eligibility**: ADMIN_SPEC lists a total usage limit only. Should a code be usable once per customer, and can it combine with other codes? The Part B2 redemption table records the customer, so a per-customer rule can be added without changing `coupons`.
-6. **Cancelled orders and `used_count`**: If an order is cancelled or fully refunded, does the redemption still count against `usage_limit`? The redemption table will record the order, so the answer changes a query, not the schema.
+All six are now decided. The answers below are the design of record for Part B1; Part B2 builds against them.
+
+1. **PHP sessions or these tables?** — **Decided: PHP sessions for customers, `admin_sessions` for admin.** `customer_sessions` is dropped from the schema. Customers use PHP's built-in sessions with an `HttpOnly`, `Secure`, `SameSite=Lax` cookie, and the session ID is regenerated on login to prevent fixation. `admin_sessions` is kept because an admin password change or reset must end every admin session at once, and because the admin timeout is enforced on the server rather than trusted to the browser.
+2. **Customer password reset?** — **Decided: emailed one-time link.** `customer_password_resets` stores only the SHA-256 hash of the token. The link expires 30 minutes after it is created, `used_at` makes it single-use, and used or expired tokens never work. No customer OTP table is needed, and `admin_otp_codes` stays admin-only.
+3. **Lockout numbers?** — **Decided: 5 failures per identifier in 15 minutes locks that account for 15 minutes; 20 failures per IP per hour blocks that IP; OTP and password-reset requests are limited to 3 per hour per account.** All four limits are code constants, not `settings` keys: they cannot be edited from the admin panel, and changing them is a code change, not a migration. `login_attempts` stores the raw rows the checks count, keyed by `account_type`, `identifier` and `ip`.
+4. **Trusted device lifetime?** — **Decided: 30 days.** `admin_trusted_devices.expires_at` is `NOT NULL` and is set to `created_at + 30 days`; an expired device is challenged with a new-device OTP. A password change or reset deletes all trusted devices and all admin sessions for the account in one transaction. That delete-all is the revocation mechanism; a per-device revoke screen is not in the ADMIN_SPEC scope.
+5. **Coupon eligibility?** — **Decided: once per customer by default, with `allow_repeat_use` as the opt-out, and one code per order.** `coupons.allow_repeat_use = 0` means a customer with an existing redemption for that coupon is rejected; `1` means repeat use is allowed, still subject to `usage_limit`. Codes never stack on one order. The per-customer check reads the redemption table added in Part B2, so `coupons` does not need a per-customer list.
+6. **Cancelled orders and `used_count`?** — **Decided: the use is released.** A cancelled, rejected or fully refunded order gives its coupon use back: `used_count` is decremented by one in the same transaction that changes the order status, driven by that order's redemption row from Part B2. A partial refund keeps the redemption, because the customer still got the discount.
 
 ### Risks
 - **CHECK is not enforced on MySQL 5.7**: `chk_coupons_value` and `chk_coupons_percent_max` (and the Part A checks) are silently ignored there. The application must validate coupon value and percent range regardless of the Hostinger database version.
 - **Phone uniqueness depends on normalisation**: `+91 98765 43210`, `09876543210` and `9876543210` are three different strings. Without one canonical format before every write, duplicate accounts leak through the unique index.
 - **Case- and accent-insensitive email matching**: `utf8mb4_unicode_ci` makes `A@x.com` and `a@x.com` the same account (intended), but it also treats some accented variants as equal. Emails are ASCII in practice, so this is acceptable, but it is a property of the collation, not of the code.
-- **`used_count` can drift**: It is a counter, not a derived value. If a redemption is reversed or an order deleted outside the normal path, the counter must be corrected explicitly, or Part B2 should recompute it from the redemption table when in doubt.
+- **`used_count` can drift**: It is a counter, not a derived value. The increment and the release (on cancel, rejection or full refund) both go through explicit updates in the order transaction, and any path that reverses a redemption outside that flow must correct the counter. Part B2 should recompute it from the redemption table when in doubt, and a periodic check comparing the two is cheap insurance.
 - **Activity log holds personal data**: Snapshots can contain customer names, phones and addresses. The 3-month retention is therefore a privacy control as well as a storage control, and the cleanup job must actually run.
-- **Growth of auth tables**: `admin_login_attempts`, `admin_otp_codes`, `admin_trusted_devices` and both session tables grow with every login. If the scheduled cleanup stops, the tables and their indexes grow without bound; monitor row counts.
+- **Growth of auth tables**: `login_attempts`, `admin_otp_codes`, `admin_trusted_devices`, `admin_sessions` and `customer_password_resets` grow with every login, OTP and reset request. If the scheduled cleanup stops, the tables and their indexes grow without bound; monitor row counts and prune `login_attempts` oldest-first.
+- **Per-IP lockout can catch innocents**: The 20-failures-per-hour rule blocks by IP, and many customers share one IP behind carrier NAT or an office router. The per-identifier limit is the primary control; the IP rule is a backstop, and the block must expire by itself (no manual unblock) so a shared address is never locked out permanently.
+- **Customer sessions cannot be revoked from the database**: Because customer sessions are PHP sessions, there is no row to delete when a customer changes their password or asks to be signed out everywhere. A stolen customer cookie stays valid until the PHP session expires, unless the app stores a password fingerprint in the session and compares it on each request. This is an accepted launch trade-off; the admin side does not have it.
+- **Anonymisation is irreversible**: Deleting a customer account destroys the name, email, phone and addresses permanently. There is no undo, so the confirmation step must be explicit, and the operation must run as one transaction with the address and reset-row deletes, or a half-anonymised row can keep working credentials.
+- **The one-time admin setup script is a one-off secret**: If it is left on the server or left runnable after the first admin exists, it becomes a public registration hole. It must be run manually, refuse to run when `admin_users` is non-empty, and be deleted or disabled immediately afterwards.
 - **Single admin account is a single point of failure**: No roles, no second admin, no recovery path except the email OTP flow. If the owner's mailbox is lost, access to the admin panel is lost with it.
 - **Settings typos fail silently**: A misspelled key reads as "not set". The app must validate keys against the fixed list and fail loudly rather than falling back to a wrong default.
 - **Cart data is client-side and untrusted**: Quantities and any stored price hint can be edited in the browser. This is safe only because checkout re-reads price and stock on the server; any code path that trusts a browser price is a discount bug.
