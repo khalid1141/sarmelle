@@ -31,6 +31,7 @@
 - **Monetary Values**: Stored strictly as exact integers in paise (`BIGINT UNSIGNED`), avoiding floating-point precision loss (e.g., ₹2,999.00 is stored as `299900`).
 - **Timestamps**: Expressed in UTC using `created_at` (`DEFAULT CURRENT_TIMESTAMP`) and `updated_at` (`DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`).
 - **Soft Deletes**: Managed via nullable UTC timestamp `deleted_at` (`DEFAULT NULL`) where required by ADMIN_SPEC. Currently only `products`, `categories` and `collections` carry `deleted_at`; `product_colour_variants` uses an `is_active` flag instead so that a hidden colour can be reactivated rather than tombstoned.
+- **Constraint support**: CHECK constraints are enforced by MySQL 8.0.16+ and MariaDB 10.2+ but ignored by MySQL 5.7. Check the Hostinger database version at deployment. The guarded stock decrement protects against overselling either way.
 
 ---
 
@@ -423,11 +424,11 @@
 3. **Slug uniqueness and lookup**: Before a slug is used for a new or renamed product, the application checks **both** `products.slug` and `product_slug_history.slug`. A hit in either table means the slug is taken (current product or a redirect) and a numeric suffix is added.
 4. **Deleted status and timestamp**: `products.deleted_at` is set exactly when `status` becomes `Deleted`, and is cleared only if the row is restored. The two must never disagree; treat `deleted_at IS NOT NULL` as equivalent to `status = 'Deleted'`.
 5. **Delete renames the slug**: On delete, the product slug is renamed to `<slug>-deleted-<id>`. This frees the original slug for reuse while keeping the unique index satisfied. All `product_slug_history` rows for that product are deleted at the same time so no redirect resurrects a deleted product.
-6. **One primary image per colour**: Each `product_colour_variants` row has exactly one `product_images` row with `is_primary = 1`. Setting a new primary unsets the previous one in the same transaction.
+6. **One primary image per colour**: At most one primary image per colour; the first image uploaded becomes primary by default; a product cannot be Published unless every active colour has at least one image (app rule).
 7. **Sub-category belongs to category**: When `products.sub_category_id` is set, `categories.parent_id` of that sub-category must equal `products.category_id`. The database cannot express this with a simple FK, so it is enforced in the application (and can be backstopped by a trigger later if desired).
 8. **Never hard-delete a product with stock history**: `stock_movements.product_id` is `ON DELETE RESTRICT`, so a product that has ever moved stock cannot be hard-deleted. Deletion is always the soft `status = 'Deleted'` path; order snapshots preserve sales history.
 9. **Maximum two category levels**: Categories are either top-level (`parent_id IS NULL`) or sub-categories (one level deep). A row whose parent already has a parent is invalid; depth is capped at two so the product form's Category/Sub-category dropdowns stay unambiguous.
-10. **Holds never touch physical stock**: `stock_holds` only reduces *available* stock at read time. `product_variant_sizes.quantity` changes solely through the guarded decrement at order placement or through an admin stock edit, and every such change writes a `stock_movements` row.
+10. **Holds never touch physical stock**: `stock_holds` only reduces *available* stock at read time. `product_variant_sizes.quantity` changes solely through the guarded decrement when payment is verified or through an admin stock edit, and every such change writes a `stock_movements` row. The hold starts when the customer clicks Pay, before the payment screen opens, so stock cannot be oversold while payment is pending.
 11. **Size charts are column-flexible**: A chart is a set of ordered measurement columns, ordered size rows, and one cell per row/column intersection. A new chart starts with the columns Bust, Waist, Hip and Length; the admin may add, rename, reorder or remove columns afterwards without a schema change. Removing a column removes its cells, and renaming a column keeps its cells.
 12. **Cells stay inside one chart**: Every cell's `size_chart_row_id` and `size_chart_column_id` must belong to the same chart. Foreign keys only prove each side exists, so the application checks that both sides share one `size_chart_id` before writing a cell.
 13. **Unit is per chart**: `size_charts.unit` (`in` or `cm`) applies to every cell in that chart. Values are stored as entered and are not converted between charts; a product using a chart inherits that chart's unit for display.
@@ -452,6 +453,6 @@
 
 ### Questions
 1. **Order-Related Links**: `stock_movements.order_id` and the order reference on `stock_holds` are intentionally loose (`BIGINT UNSIGNED NULL` / `checkout_ref`) in Part A. Their foreign keys and delete rules will be added in Part B alongside the `orders` table.
-2. **Admin User Reference on Stock Movements**: In `stock_movements`, `user_id` is currently nullable alongside an immutable `performed_by` string snapshot. When user accounts are finalized in a later part, should `user_id` strictly foreign-key to the `users` table, allowing null only for automated system operations?
-3. **Stock Hold Cleanup Cadence**: Expired holds are ignored by the availability query, so correctness does not depend on cleanup. Is a periodic delete job sufficient, or should `stock_holds` be pruned opportunistically on each checkout attempt for the same variant?
+2. **Admin User Reference on Stock Movements (answered)**: `stock_movements.user_id` links to `admin_users(id)` with `ON DELETE RESTRICT ON UPDATE CASCADE`. It is `NULL` only for system actions (scheduled jobs, automated cleanup), where `performed_by` records the system name. The constraint is declared in `db/schema_draft.sql` ahead of the `admin_users` table, which is created in Part B1; `FOREIGN_KEY_CHECKS` is off at the top of the draft file.
+3. **Stock Hold Cleanup Cadence (answered)**: Expired holds are removed both by a cron job every few minutes and by pruning that variant's expired holds inside the checkout transaction.
 

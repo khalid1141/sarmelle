@@ -328,7 +328,8 @@ CREATE TABLE IF NOT EXISTS `stock_movements` (
     INDEX `idx_stock_movements_product_time` (`product_id`, `created_at`),
     INDEX `idx_stock_movements_order_id` (`order_id`),
     CONSTRAINT `fk_stock_movements_variant_size` FOREIGN KEY (`product_variant_size_id`) REFERENCES `product_variant_sizes` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-    CONSTRAINT `fk_stock_movements_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+    CONSTRAINT `fk_stock_movements_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_stock_movements_user` FOREIGN KEY (`user_id`) REFERENCES `admin_users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
