@@ -76,18 +76,20 @@ Order create is rejected by the server for logged-out users.
 
 ## 8. Returns and Exchanges
 - Window: a setting (days) from the delivered date. Orders inside the window are highlighted; others are empty.
-- **One request per order** (return or exchange), then the option disables. The customer can pick which items (partial returns).
-- Owner **Accept or Reject** with 10-minute undo and delayed customer email. Reject: reason from a dropdown plus an optional text note. Default reasons:
+- **One request per order** (return or exchange), then the option disables. One type per request: the customer picks Return or Exchange, the items (partial returns are allowed) and quantities, gives a reason and an optional note, and may enter the courier and tracking ID of the parcel being sent back.
+- The customer posts the parcel back at their own cost. The owner does nothing until it arrives; the request is shown as **Awaiting parcel**.
+- Ladder: Awaiting parcel → **Item received** (undo allowed while no decision exists) → **Accept** or **Reject** → Completed.
+- Owner **Accept or Reject** with 10-minute undo and the customer email sent after the window. Undo of a decision returns the request to Item received and cancels the queued email. Reject: reason from a dropdown plus an optional text note; nothing is refunded and stock does not move, and the item stays with the owner, with any send-back to the customer handled manually (the note records it). Default reasons:
   - Item used, washed or altered
   - Tags or original packaging missing
   - Product not eligible for return
   - Reason not covered by the return policy
   - Item received does not match the returned order
   - Other
-- After Accept: tick **Item received** (undo), then **Restock** (undo) when the item is back in stock.
-- **Return:** refund is the product price only (shipping excluded). If we sent a wrong or damaged item, the refund includes shipping. The refund amount is editable by the owner before refunding (handles coupon splits).
-- **Exchange:** same product, different size or colour, or the same variant if the item was damaged. Stock for the replacement reduces by 1 automatically. The owner enters courier and tracking ID, as for normal orders. If the new variant costs more, the customer pays extra outside the app. An optional note field records "extra Rs collected".
-- Return/exchange email notifications go to the owner for every request.
+- **Return:** Accept creates a pending refund for the product price only (shipping excluded). If we sent a wrong or damaged item, the refund includes shipping. The refund amount is editable by the owner before refunding (handles coupon splits). Undo inside 10 minutes deletes the still-pending refund and is refused once the refund is done; ticking Refund done marks the return completed.
+- **Restock:** available only after Accept, ticked when the item is back in stock, and reversible by a guarded decrement.
+- **Exchange:** same product, different size or colour, or the same variant if the item was damaged. Accept creates no refund. Until the replacement ships the owner may change the replacement variant (recorded in the activity log) or choose **Refund instead**, which turns the request into a return with a pending refund of the product price. Saving the replacement courier and tracking ID reduces stock automatically and sends the tracking email; the exchange is completed when the replacement has shipped. If the new variant costs more, the customer pays extra outside the app. An optional note field records "extra Rs collected".
+- Customer emails: request received (with the return address and packing instructions), parcel received, the decision, and exchange shipped. The owner receives an email for every new request.
 
 ## 9. Refunds (manual at launch)
 - Rejected orders, accepted cancellations, accepted returns and late payments (arriving after the hold expired) all create entries in a **Refund pending** list.
