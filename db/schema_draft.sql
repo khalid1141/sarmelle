@@ -123,7 +123,7 @@ CREATE TABLE IF NOT EXISTS `set_types` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
--- 4. size_charts and size_chart_rows
+-- 4. size_charts, size_chart_rows, size_chart_columns, size_chart_cells
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `size_charts` (
     `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -139,16 +139,34 @@ CREATE TABLE IF NOT EXISTS `size_chart_rows` (
     `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     `size_chart_id` BIGINT UNSIGNED NOT NULL,
     `size_name` VARCHAR(32) NOT NULL,
-    `bust` VARCHAR(32) NULL,
-    `waist` VARCHAR(32) NULL,
-    `hip` VARCHAR(32) NULL,
-    `length` VARCHAR(32) NULL,
     `display_order` INT UNSIGNED NOT NULL DEFAULT 0,
     `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY `uq_size_chart_rows_chart_size` (`size_chart_id`, `size_name`),
     INDEX `idx_size_chart_rows_order` (`size_chart_id`, `display_order`),
     CONSTRAINT `fk_size_chart_rows_chart` FOREIGN KEY (`size_chart_id`) REFERENCES `size_charts` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `size_chart_columns` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `size_chart_id` BIGINT UNSIGNED NOT NULL,
+    `label` VARCHAR(50) NOT NULL COMMENT 'e.g. Bust, Shoulder, Sleeve length',
+    `display_order` INT UNSIGNED NOT NULL DEFAULT 0,
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_size_chart_columns_chart_label` (`size_chart_id`, `label`),
+    INDEX `idx_size_chart_columns_order` (`size_chart_id`, `display_order`),
+    CONSTRAINT `fk_size_chart_columns_chart` FOREIGN KEY (`size_chart_id`) REFERENCES `size_charts` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `size_chart_cells` (
+    `size_chart_row_id` BIGINT UNSIGNED NOT NULL,
+    `size_chart_column_id` BIGINT UNSIGNED NOT NULL,
+    `value` VARCHAR(32) NULL DEFAULT NULL COMMENT 'Text so ranges like 36-38 are valid',
+    PRIMARY KEY (`size_chart_row_id`, `size_chart_column_id`),
+    INDEX `idx_size_chart_cells_column` (`size_chart_column_id`),
+    CONSTRAINT `fk_size_chart_cells_row` FOREIGN KEY (`size_chart_row_id`) REFERENCES `size_chart_rows` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `fk_size_chart_cells_column` FOREIGN KEY (`size_chart_column_id`) REFERENCES `size_chart_columns` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------

@@ -130,11 +130,11 @@
 ---
 
 #### 5. `size_charts`
-- **Purpose**: Named master charts (e.g., "Kurti sizes") reused across products via dropdown. Charts in use cannot be deleted (Section 5).
+- **Purpose**: Named master charts (e.g., "Kurti sizes") reused across products via dropdown. A chart owns its measurement columns, size rows and cell values, so it adapts to any garment type. Charts in use cannot be deleted (Section 5).
 - **Columns**:
   - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
   - `name`: VARCHAR(100), NOT NULL (Chart title, e.g., "Kurti Regular Fit")
-  - `unit`: ENUM('in', 'cm'), NOT NULL, DEFAULT 'in' (Measurement unit)
+  - `unit`: ENUM('in', 'cm'), NOT NULL, DEFAULT 'in' (Measurement unit; set once per chart and applied to all its cells)
   - `description`: TEXT, NULL, DEFAULT NULL (Optional notes or fit advice)
   - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
   - `updated_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -145,20 +145,17 @@
 - **Indexes**: None.
 - **Enum Values**:
   - `unit`: `'in'`, `'cm'`
+- **Storefront popup**: The product page size chart popup reads this chart, its columns (ordered by `display_order`), its rows (ordered by `display_order`) and the matching cells, and displays `unit` in the header.
 
 ---
 
 #### 6. `size_chart_rows`
-- **Purpose**: Defines measurement rows for a size chart. Rows represent sizes (e.g., S, M, L, XL), while columns store bust, waist, hip, and length measurements (Section 5).
+- **Purpose**: Each row is one size (e.g., S, M, L, XL, Free size) in a chart. Measurements are no longer fixed columns here; they live in `size_chart_cells`, so a chart can carry any set of measurement columns.
 - **Columns**:
   - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
   - `size_chart_id`: BIGINT UNSIGNED, NOT NULL
   - `size_name`: VARCHAR(32), NOT NULL (Size label, e.g., 'XS', 'S', 'M', 'L', 'XL', 'Free size')
-  - `bust`: VARCHAR(32), NULL, DEFAULT NULL (Measurement value or range, e.g., '36' or '34-36')
-  - `waist`: VARCHAR(32), NULL, DEFAULT NULL
-  - `hip`: VARCHAR(32), NULL, DEFAULT NULL
-  - `length`: VARCHAR(32), NULL, DEFAULT NULL
-  - `display_order`: INT UNSIGNED, NOT NULL, DEFAULT 0 (Display sorting order)
+  - `display_order`: INT UNSIGNED, NOT NULL, DEFAULT 0 (Row display ordering)
   - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
   - `updated_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 - **Primary Key**: `id`
@@ -172,7 +169,45 @@
 
 ---
 
-#### 7. `products`
+#### 7. `size_chart_columns`
+- **Purpose**: Defines the measurement columns of a chart (e.g., Bust, Waist, Hip, Shoulder, Sleeve length). The admin can add, rename, reorder or remove columns, so charts are not tied to a fixed measurement set. A brand-new chart starts with the four columns Bust, Waist, Hip and Length, which can then be edited freely.
+- **Columns**:
+  - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
+  - `size_chart_id`: BIGINT UNSIGNED, NOT NULL
+  - `label`: VARCHAR(50), NOT NULL (Column heading, e.g., 'Bust', 'Shoulder', 'Sleeve length')
+  - `display_order`: INT UNSIGNED, NOT NULL, DEFAULT 0 (Column order left to right)
+  - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
+  - `updated_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+- **Primary Key**: `id`
+- **Foreign Keys**:
+  - `fk_size_chart_columns_chart`: `size_chart_id` REFERENCES `size_charts(id)` ON DELETE CASCADE ON UPDATE CASCADE
+- **Unique Constraints**:
+  - `uq_size_chart_columns_chart_label`: (`size_chart_id`, `label`) — a chart cannot have two columns with the same heading.
+- **Indexes**:
+  - `idx_size_chart_columns_order`: (`size_chart_id`, `display_order`)
+- **Enum Values**: None.
+
+---
+
+#### 8. `size_chart_cells`
+- **Purpose**: Holds the measurement value at the intersection of one size row and one measurement column. Values are stored as text so both single numbers (`36`) and ranges (`36-38`) are valid.
+- **Columns**:
+  - `size_chart_row_id`: BIGINT UNSIGNED, NOT NULL
+  - `size_chart_column_id`: BIGINT UNSIGNED, NOT NULL
+  - `value`: VARCHAR(32), NULL, DEFAULT NULL (Measurement text, e.g., '36', '36-38', '—')
+- **Primary Key**: (`size_chart_row_id`, `size_chart_column_id`) — one value per row/column intersection.
+- **Foreign Keys**:
+  - `fk_size_chart_cells_row`: `size_chart_row_id` REFERENCES `size_chart_rows(id)` ON DELETE CASCADE ON UPDATE CASCADE
+  - `fk_size_chart_cells_column`: `size_chart_column_id` REFERENCES `size_chart_columns(id)` ON DELETE CASCADE ON UPDATE CASCADE
+- **Unique Constraints**: Composite primary key above.
+- **Indexes**:
+  - `idx_size_chart_cells_column`: (`size_chart_column_id`)
+- **Enum Values**: None.
+- **Same-chart rule**: A cell's row and column must belong to the same `size_chart_id`. Foreign keys can only prove that each side exists, not that they share a chart, so the application enforces this on write (and rejects cross-chart pairs).
+
+---
+
+#### 9. `products`
 - **Purpose**: Central catalogue record capturing common product-level metadata, categorization, managed attribute references, base pricing in paise, lifecycle statuses, size chart association, and manual stock override.
 - **Columns**:
   - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
@@ -233,7 +268,7 @@
 
 ---
 
-#### 8. `product_slug_history`
+#### 10. `product_slug_history`
 - **Purpose**: Preserves historical product slugs when a product name/slug is modified so legacy URLs can issue an HTTP 301 Permanent Redirect to the current canonical URL.
 - **Columns**:
   - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
@@ -251,7 +286,7 @@
 
 ---
 
-#### 9. `product_colour_variants`
+#### 11. `product_colour_variants`
 - **Purpose**: Manages distinct colours per product, holding colour name, hex RGB code, display sorting order, and optional price override (e.g. black fabric surcharge per Section 4).
 - **Columns**:
   - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
@@ -275,7 +310,7 @@
 
 ---
 
-#### 10. `product_images`
+#### 12. `product_images`
 - **Purpose**: Holds product gallery images linked to a specific colour variant. Supports display sorting and primary image indicator (Section 4).
 - **Columns**:
   - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
@@ -299,7 +334,7 @@
 
 ---
 
-#### 11. `product_variant_sizes`
+#### 13. `product_variant_sizes`
 - **Purpose**: Defines size offerings (S, M, L, XL, Free size) per colour variant and holds the physical stock count. When available stock reaches 0, the variant automatically displays "Out of stock" (Section 3 & 4); available stock is derived from this row minus unexpired holds.
 - **Columns**:
   - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
@@ -332,7 +367,7 @@
 
 ---
 
-#### 12. `stock_movements`
+#### 14. `stock_movements`
 - **Purpose**: Comprehensive audit log recording every inventory quantity change (who, when, old quantity, new quantity, reason per Section 3).
 - **Columns**:
   - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
@@ -359,7 +394,7 @@
 
 ---
 
-#### 13. `stock_holds`
+#### 15. `stock_holds`
 - **Purpose**: Temporary reservations created when a customer starts checkout, so the same last units are not sold twice during the payment window. Holds are bookkeeping only: `product_variant_sizes.quantity` always remains the physical stock and is only decremented when an order is actually placed.
 - **Columns**:
   - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
@@ -393,6 +428,10 @@
 8. **Never hard-delete a product with stock history**: `stock_movements.product_id` is `ON DELETE RESTRICT`, so a product that has ever moved stock cannot be hard-deleted. Deletion is always the soft `status = 'Deleted'` path; order snapshots preserve sales history.
 9. **Maximum two category levels**: Categories are either top-level (`parent_id IS NULL`) or sub-categories (one level deep). A row whose parent already has a parent is invalid; depth is capped at two so the product form's Category/Sub-category dropdowns stay unambiguous.
 10. **Holds never touch physical stock**: `stock_holds` only reduces *available* stock at read time. `product_variant_sizes.quantity` changes solely through the guarded decrement at order placement or through an admin stock edit, and every such change writes a `stock_movements` row.
+11. **Size charts are column-flexible**: A chart is a set of ordered measurement columns, ordered size rows, and one cell per row/column intersection. A new chart starts with the columns Bust, Waist, Hip and Length; the admin may add, rename, reorder or remove columns afterwards without a schema change. Removing a column removes its cells, and renaming a column keeps its cells.
+12. **Cells stay inside one chart**: Every cell's `size_chart_row_id` and `size_chart_column_id` must belong to the same chart. Foreign keys only prove each side exists, so the application checks that both sides share one `size_chart_id` before writing a cell.
+13. **Unit is per chart**: `size_charts.unit` (`in` or `cm`) applies to every cell in that chart. Values are stored as entered and are not converted between charts; a product using a chart inherits that chart's unit for display.
+14. **Size chart edits propagate**: Because products reference a chart rather than copying it, editing a chart's columns, rows or cells immediately updates every product using it, including the storefront popup. A chart referenced by any product cannot be deleted (`products.size_chart_id` is `ON DELETE RESTRICT`).
 
 ---
 
@@ -401,7 +440,7 @@
 2. **Product Categorization**: `categories` `1 : N` `products` (assigned both a primary `category_id` and an optional `sub_category_id`); the sub-category's parent must equal the product's category.
 3. **Collections**: `products` `N : M` `collections` via the join table `product_collections`.
 4. **Managed Lists**: Each managed list table (`fabrics`, `occasions`, `fits`, `sleeve_types`, `neck_types`, `set_types`) has a `1 : N` relationship to `products` with `ON DELETE RESTRICT`; values are hidden with `is_active`, never deleted.
-5. **Size Charts**: `size_charts` `1 : N` `size_chart_rows`. In addition, `size_charts` `1 : N` `products` with `ON DELETE RESTRICT` ensuring in-use charts cannot be accidentally removed.
+5. **Size Charts**: `size_charts` `1 : N` `size_chart_columns` (ordered measurement headings), `1 : N` `size_chart_rows` (ordered sizes), and `1 : N` `size_chart_cells` via those rows and columns. A cell joins one row and one column of the same chart. In addition, `size_charts` `1 : N` `products` with `ON DELETE RESTRICT`, ensuring in-use charts cannot be removed.
 6. **Slug History**: `products` `1 : N` `product_slug_history` for URL redirect preservation; rows are removed when a product is deleted, and slug uniqueness spans both tables.
 7. **Colour Variants**: `products` `1 : N` `product_colour_variants`; every product has at least one colour, colours are hidden via `is_active`, and an optional per-colour price override replaces only the sale price.
 8. **Product Images**: `product_colour_variants` `1 : N` `product_images` (each image belongs to a specific colour variant, exactly one flagged primary per colour).
@@ -414,6 +453,5 @@
 ### Questions
 1. **Order-Related Links**: `stock_movements.order_id` and the order reference on `stock_holds` are intentionally loose (`BIGINT UNSIGNED NULL` / `checkout_ref`) in Part A. Their foreign keys and delete rules will be added in Part B alongside the `orders` table.
 2. **Admin User Reference on Stock Movements**: In `stock_movements`, `user_id` is currently nullable alongside an immutable `performed_by` string snapshot. When user accounts are finalized in a later part, should `user_id` strictly foreign-key to the `users` table, allowing null only for automated system operations?
-3. **Size Chart Range Formats**: `size_chart_rows` stores measurement values (`bust`, `waist`, `hip`, `length`) as `VARCHAR(32)` to allow single numbers (`36`) or ranges (`36-38`). The owner will decide whether flexible columns are kept or replaced with numeric `DECIMAL` values supporting unit conversion; unchanged in this revision.
-4. **Stock Hold Cleanup Cadence**: Expired holds are ignored by the availability query, so correctness does not depend on cleanup. Is a periodic delete job sufficient, or should `stock_holds` be pruned opportunistically on each checkout attempt for the same variant?
+3. **Stock Hold Cleanup Cadence**: Expired holds are ignored by the availability query, so correctness does not depend on cleanup. Is a periodic delete job sufficient, or should `stock_holds` be pruned opportunistically on each checkout attempt for the same variant?
 
