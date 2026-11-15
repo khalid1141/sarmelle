@@ -8,7 +8,7 @@ Design draft complete across Parts A, B1, B2a and B2b, awaiting owner and superv
 
 ### Final table index
 
-39 table specifications, 44 physical tables: specification 4 covers six managed lists. Every table below exists in `db/schema_draft.sql`; the part column points at the section that specifies it.
+39 table specifications, 44 physical tables: 4a-4f are the six managed lists under specification 4. Every table below exists in `db/schema_draft.sql`; the part column points at the section that specifies it.
 
 | # | Table | Purpose | Part |
 | --- | --- | --- | --- |
@@ -1210,28 +1210,30 @@ A customer can create a cancellation request while the order is `new`. Once the 
 
 A return is available only after the order is `delivered`, only inside the return window, and only for products with `return_eligible = 1`. The customer chooses Return or Exchange on the order, picks the lines and quantities (one request per order, one type per request), gives a reason and submits. The customer sends the parcel back at their own cost, and the owner decides only after it arrives; nothing is asked of the owner before that.
 
-1. **Request.** The customer chooses `type = 'return'`, selects the `order_items` and quantities, gives a reason and an optional note, and may enter the courier and tracking ID of the parcel being sent back in `customer_return_courier` and `customer_return_tracking`. A `return_requests` row is written with `status = 'requested'`, shown to the admin as **Awaiting parcel**, and the selected lines go into `return_request_items`. Two emails are queued: `return_request_received` to the customer, immediately, confirming the request and showing the return address from `settings.return_address` with the packaging instructions; and `owner_return_request` to the owner, immediately. The order, stock and coupon are untouched.
+1. **Request.** The customer chooses `type = 'return'`, selects the `order_items` and quantities, gives a reason and an optional note, and may enter the courier and tracking ID of the parcel being sent back in `customer_return_courier` and `customer_return_tracking`. A `return_requests` row is written with `status = 'requested'`, shown to the admin as **Awaiting parcel**, and the selected lines go into `return_request_items`. Two emails are queued: `return_request_received` to the customer, immediately, confirming the request, showing the return address from `settings.return_address` with the packaging instructions, and softly asking the customer to contact Sarmelle customer care (`store_phone` and `store_email` from settings) before posting the parcel; and `owner_return_request` to the owner, immediately. The order, stock and coupon are untouched. Submitting uses the customer's one chance: the option is disabled immediately, and a rejected request cannot be replaced by a second request.
 2. **Item received.** When the parcel actually arrives, the owner ticks **Item received**: `received_at` is stamped and `status = 'received'`, and a `return_parcel_received` email is queued to the customer immediately. This tick can be undone only while no decision exists (`decided_at IS NULL`); undo returns the request to `requested` and clears `received_at`.
 3. **Accept or Reject.** The decision is made on a received parcel. Either decision stamps `decided_at`, `decided_by` and `undo_until = decided_at + 10 minutes`, and queues the customer email (`return_accepted` or `return_rejected`) with `send_after = undo_until`.
-4. **Reject.** `status = 'rejected'`, `reject_reason_id` comes from the managed `return_reject_reasons` list, and `reject_note` holds the note. Nothing is refunded, stock does not move, and the parcel stays with the owner: sending it back to the customer is arranged manually outside the app. Undo inside 10 minutes returns the request to `received`, stamps `undone_at`, and cancels the queued email.
+4. **Reject.** `status = 'rejected'`, `reject_reason_id` comes from the managed `return_reject_reasons` list, and `reject_note` holds the note. Nothing is refunded, stock does not move, and the parcel stays with the owner until it is sent back under step 10. Undo inside 10 minutes returns the request to `received`, stamps `undone_at`, and cancels the queued email. A decision that is not undone stays `rejected` permanently: a rejected request never becomes `completed`.
 5. **Accept.** `status = 'accepted'`. In the same transaction a pending `refunds` row is written with `kind = 'return'`, `return_request_id` set, and the current `refund_amount_paise`. The amount defaults to the selected lines' product value and is **editable by the owner before refunding**, so a coupon split can be handled by hand. Shipping is included only when the fault was ours (wrong or damaged item), which sets `refund_includes_shipping = 1`. The refund can never take the order's total refunds above the captured payment.
 6. **Undo an accept.** Only while the refund is still `pending`: the request returns to `received`, `undone_at` is stamped, the pending refund row is deleted, and the queued customer email is cancelled. If the refund is already `done`, the undo is refused.
 7. **Coupon release.** When the sum of that order's refunds reaches `orders.total_paise`, the coupon use is released. A partial return keeps the redemption, because the customer kept the discount on what they kept.
 8. **Restock.** Ticking **Restock** increments the returned quantities, writes `stock_movements` rows with `return_request_id`, and stamps `restocked_at`. It is available only after Accept. Undo takes the units back out with a guarded decrement; if they have sold, the undo is refused.
-9. **Completed.** When the owner ticks Refund done in the Refund pending list, the refund is finished and the application marks the request `completed`. Undo is no longer possible once the refund is done.
+9. **Completed.** When the owner ticks Refund done in the Refund pending list, the refund is finished and the application marks the request `completed`. Undo is no longer possible once the refund is done. Only an accepted return reaches `completed` this way.
+10. **Send parcel back (rejected only).** After the decision's undo window has closed (`undo_until` has passed), the owner sees **Send parcel back** on the rejected request. The owner pays the postage. The form asks for the courier (the default is pre-selected) and the tracking ID; saving copies `courier_id`, `courier_name` and `tracking_id`, stamps `shipped_at`, and queues the `return_sent_back` email to the customer immediately, showing the courier and tracking number. The request stays `rejected`; it does not become `completed`, and `shipped_at` is the record that the parcel went back. The Returns tab has a **Needs action** filter for `status = 'rejected' AND shipped_at IS NULL`, which lists exactly the rejected parcels still waiting to go back.
 
 ### Exchanges (plain words)
 
 An exchange uses the same request, Item received and decision ladder, but `type = 'exchange'`, no refund row is created on accept, and every selected line names a **replacement variant**.
 
 - The same customer flow applies: one request per order, the parcel is posted back at the customer's own cost, and the owner acts only after it arrives. Item received, then Accept or Reject, both reversible exactly as for a return.
+- A rejected exchange follows the same send-back rule as a rejected return: once `undo_until` has passed, the owner saves the outbound courier and tracking under **Send parcel back**, the owner pays the postage, `shipped_at` is stamped and `return_sent_back` is queued. No replacement variant is used and no stock moves.
 - The replacement must be the **same product**, either a different size or colour, or the same variant when the item was damaged.
 - On accept, `status = 'accepted'` and the delayed `return_accepted` email is queued. No stock moves and no refund is created.
 - Until the replacement ships, the owner may change the replacement variant on the request; every change is recorded in the activity log.
 - If the chosen replacement is unavailable when the owner is ready to ship, the owner either picks another variant or chooses **Refund instead**. That changes `type` to `return` and creates the pending `refunds` row for the product price in the same transaction, so the request then finishes through the return path.
 - When the owner saves the replacement courier and tracking ID, the server runs the guarded stock decrement for each replacement line, writes a `stock_movements` row with `return_request_id`, copies `courier_name`, stores `courier_id`, `tracking_id` and `shipped_at`, and queues the `exchange_shipped` email to the customer immediately, which may show the tracking number. If the guarded decrement fails, the save is refused and the owner picks another variant or chooses Refund instead.
 - The old item follows the same **Item received** and **Restock** ticks as a return: the old item's arrival is already recorded before the decision, and it can be restocked once the request is accepted.
-- The exchange is `completed` when the replacement has shipped, that is when `shipped_at` is set.
+- The exchange is `completed` when the replacement has shipped, that is when `shipped_at` is set on an `accepted` exchange. On a `rejected` exchange, `shipped_at` instead records the old item going back to the customer and the request stays `rejected`.
 - Any price difference is paid outside the app. `extra_payment_note` is the only record, for example "extra Rs 200 collected". No payment or refund row is created for the difference.
 
 ### Return window (plain words)
@@ -1242,7 +1244,7 @@ The window is the existing `settings.return_window_days` value, counted from `or
 - The application refuses a request outside the window, even if the customer can still see the order.
 - Orders inside the window are highlighted in the admin; orders outside it have the return option empty.
 - One request per order, return or exchange, is enforced by `uq_return_requests_order`; once a request exists, the storefront disables the option for that order. The customer picks the type on the request, never both.
-- The customer pays the return postage. The optional `customer_return_courier` and `customer_return_tracking` are the only record of that parcel until it reaches the owner.
+- The customer pays the return postage. The optional `customer_return_courier` and `customer_return_tracking` are the only record of that parcel until it reaches the owner. A rejected parcel goes back at the owner's cost, with the courier and tracking recorded on the request.
 - A product with `return_eligible = 0` cannot be selected, even inside the window.
 
 ### Reports (plain words)
@@ -1277,18 +1279,29 @@ Emails are queued with `send_after` set to the intended sending time. The sendin
 | `order_shipped` | customer | Owner ships, with tracking | immediate |
 | `order_rejected` | customer | Owner rejects | `undo_until` |
 | `cancellation_accepted` | customer | Owner accepts a cancellation | `undo_until` |
-| `return_request_received` | customer | Customer submits a return or exchange; confirms the request, shows the return address from `settings.return_address` and the packing instructions | immediate |
+| `return_request_received` | customer | Customer submits a return or exchange; confirms the request, shows the return address from `settings.return_address` and the packing instructions, and softly asks the customer to contact Sarmelle customer care (`store_phone` and `store_email` from settings) before posting the parcel | immediate |
 | `return_parcel_received` | customer | Owner ticks Item received | immediate |
 | `exchange_shipped` | customer | Owner saves the replacement courier and tracking for an exchange; may show the tracking number | immediate |
 | `return_accepted` | customer | Owner accepts a return or exchange | `undo_until` |
-| `return_rejected` | customer | Owner rejects a return or exchange | `undo_until` |
+| `return_rejected` | customer | Owner rejects a return or exchange; says the parcel will be sent back at Sarmelle's cost and that the tracking will follow by email | `undo_until` |
+| `return_sent_back` | customer | Owner saves the outbound shipment on a rejected request; shows the courier and tracking number | immediate |
 | `refund_done` | customer | Owner ticks Refund done | immediate |
 | `payment_unfulfilled` | customer | B2a writes an `unfulfilled_payment` refund for a paid-but-cancelled order | immediate |
 | `owner_new_order` | owner | Payment verified and order becomes `new` | immediate |
 | `owner_cancellation_request` | owner | Customer creates a cancellation request | immediate |
 | `owner_return_request` | owner | Customer creates a return or exchange request | immediate |
 
-`template_key` is a `VARCHAR(40)`, not a database ENUM. The allowed list is exactly the fourteen keys in the table above and is validated in application code; an unknown key is a bug, not a new template. Adding a template means adding it to that list and its sender in the same release.
+`template_key` is a `VARCHAR(40)`, not a database ENUM. The allowed list is exactly the fifteen keys above and is validated in application code; an unknown key is a bug, not a new template. Adding a template means adding it to that list and its sender in the same release.
+
+The fixed list, exactly as the code validates it:
+
+```
+order_received, order_shipped, order_rejected, cancellation_accepted,
+return_request_received, return_parcel_received, exchange_shipped,
+return_accepted, return_rejected, return_sent_back, refund_done,
+payment_unfulfilled, owner_new_order, owner_cancellation_request,
+owner_return_request
+```
 
 `channel` defaults to `email`. `whatsapp` is reserved for the later provider; nothing in this part sends it. `recipient_type` separates customer and owner rows. `order_id` is the order, while `related_type` and `related_id` point loosely at the cancellation or return request that caused the email.
 
@@ -1345,7 +1358,7 @@ Sent and cancelled rows are pruned after 90 days; unsent rows are never removed 
 
 #### 37. `return_requests`
 
-- **Purpose**: The order's one return or exchange request: the parcel ladder (`requested` → `received` → `accepted` or `rejected` → `completed`), the two reversible ticks, the optional customer return parcel, and the return refund or exchange replacement shipment fields.
+- **Purpose**: The order's one return or exchange request: the parcel ladder (`requested` → `received` → `accepted` or `rejected`, then `completed` only when accepted), the two reversible ticks, the optional customer return parcel, the return refund, and one outbound shipment to the customer — the replacement for an accepted exchange or the parcel sent back for a rejected request, never both.
 - **Columns**:
   - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
   - `order_id`: BIGINT UNSIGNED, NOT NULL
@@ -1358,7 +1371,7 @@ Sent and cancelled rows are pruned after 90 days; unsent rows are never removed 
   - `decided_at`: DATETIME, NULL, DEFAULT NULL (set on accept or reject; always after `received_at`)
   - `decided_by`: BIGINT UNSIGNED, NULL, DEFAULT NULL
   - `reject_reason_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL (required when rejected; from the managed list)
-  - `reject_note`: VARCHAR(255), NULL, DEFAULT NULL (free note when rejected; the parcel goes back to the customer manually, outside the app)
+  - `reject_note`: VARCHAR(255), NULL, DEFAULT NULL (free note when rejected; the parcel goes back to the customer under **Send parcel back**)
   - `undo_until`: DATETIME, NULL, DEFAULT NULL (`decided_at + 10 minutes`)
   - `undone_at`: DATETIME, NULL, DEFAULT NULL (stamped when the decision is undone; status returns to `received` and the row is kept)
   - `restocked_at`: DATETIME, NULL, DEFAULT NULL (Restock tick; only after accepted, reversible by a guarded decrement)
@@ -1366,10 +1379,10 @@ Sent and cancelled rows are pruned after 90 days; unsent rows are never removed 
   - `refund_includes_shipping`: TINYINT(1), NOT NULL, DEFAULT 0 (1 only when we sent a wrong or damaged item)
   - `customer_return_courier`: VARCHAR(100), NULL, DEFAULT NULL (optional: courier the customer used to send the parcel back)
   - `customer_return_tracking`: VARCHAR(100), NULL, DEFAULT NULL (optional: tracking ID of the parcel the customer sends back)
-  - `courier_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL (replacement courier for an exchange)
-  - `courier_name`: VARCHAR(100), NULL, DEFAULT NULL (snapshot for an exchange)
-  - `tracking_id`: VARCHAR(100), NULL, DEFAULT NULL (replacement tracking for an exchange)
-  - `shipped_at`: DATETIME, NULL, DEFAULT NULL (replacement shipped at; exchange only; set means the exchange is completed)
+  - `courier_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL (outbound shipment to the customer: the replacement for an accepted exchange, or the parcel sent back for a rejected request; never both)
+  - `courier_name`: VARCHAR(100), NULL, DEFAULT NULL (snapshot of `couriers.name` for that outbound shipment)
+  - `tracking_id`: VARCHAR(100), NULL, DEFAULT NULL (tracking ID for that outbound shipment)
+  - `shipped_at`: DATETIME, NULL, DEFAULT NULL (outbound shipment stamped when saved: the replacement for an accepted exchange, or the parcel going back for a rejected request; never both)
   - `extra_payment_note`: VARCHAR(255), NULL, DEFAULT NULL (optional note such as "extra Rs collected")
   - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
   - `updated_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -1380,11 +1393,11 @@ Sent and cancelled rows are pruned after 90 days; unsent rows are never removed 
   - `fk_return_requests_reject_reason`: `reject_reason_id` REFERENCES `return_reject_reasons(id)` ON DELETE RESTRICT ON UPDATE CASCADE
   - `fk_return_requests_courier`: `courier_id` REFERENCES `couriers(id)` ON DELETE RESTRICT ON UPDATE CASCADE
 - **Unique Constraints**: `uq_return_requests_order` (`order_id`) — one return or exchange request per order, forever.
-- **Indexes**: `idx_return_requests_status_requested` (`status`, `requested_at`) — Returns list; `idx_return_requests_decided_by`, `idx_return_requests_reject_reason` and `idx_return_requests_courier` — FK lookups; `idx_return_requests_undo_until` (`undo_until`) — live undo windows.
+- **Indexes**: `idx_return_requests_status_requested` (`status`, `requested_at`) — Returns list; `idx_return_requests_status_shipped` (`status`, `shipped_at`) — the **Needs action** filter (`rejected` with `shipped_at IS NULL`) and outbound shipment lookups; `idx_return_requests_decided_by`, `idx_return_requests_reject_reason` and `idx_return_requests_courier` — FK lookups; `idx_return_requests_undo_until` (`undo_until`) — live undo windows.
 - **Enum Values**:
   - `type`: `return`, `exchange`.
-  - `status`: `requested`, `accepted`, `rejected`, `received`, `completed`. The ladder is `requested` → `received` → `accepted` or `rejected` → `completed`; `requested` is shown as **Awaiting parcel**.
-- **App checks**: `received_at` is set by the Item received tick before any decision, and its undo is allowed only while `decided_at IS NULL`; `decided_at` and `decided_by` are set together and never before `received_at`; `reject_reason_id` is set only when rejected; `refund_amount_paise` is set only for returns; an exchange must have a replacement variant on every item; `restocked_at` is not set before `accepted`; undoing a decision returns `status` to `received` and stamps `undone_at`; `completed` is set by the application after the finishing condition (refund done for a return, `shipped_at` for an exchange).
+  - `status`: `requested`, `accepted`, `rejected`, `received`, `completed`. The ladder is `requested` → `received` → `accepted` or `rejected`; only an accepted request can become `completed`, and `rejected` is terminal. `requested` is shown as **Awaiting parcel**.
+- **App checks**: `received_at` is set by the Item received tick before any decision, and its undo is allowed only while `decided_at IS NULL`; `decided_at` and `decided_by` are set together and never before `received_at`; `reject_reason_id` is set only when rejected; `refund_amount_paise` is set only for returns; an exchange must have a replacement variant on every item before an accepted replacement ships; `restocked_at` is not set before `accepted`; undoing a decision returns `status` to `received` and stamps `undone_at`; `completed` is set by the application after the finishing condition (refund done for an accepted return, `shipped_at` for an accepted exchange) and is never set on a rejected request; the outbound shipment fields are saved only for an accepted exchange (the replacement) or a rejected request whose `undo_until` has passed, the application refuses anything else, and a rejected request keeps `status = 'rejected'` with `shipped_at` marking that the parcel went back.
 
 #### 38. `return_request_items`
 
@@ -1415,7 +1428,7 @@ Sent and cancelled rows are pruned after 90 days; unsent rows are never removed 
   - `channel`: ENUM, NOT NULL, DEFAULT `email`
   - `recipient_type`: ENUM, NOT NULL
   - `recipient_email`: VARCHAR(255), NOT NULL
-  - `template_key`: VARCHAR(40), NOT NULL (validated in application code against the fixed fourteen-key list in the template table above; not a database ENUM)
+  - `template_key`: VARCHAR(40), NOT NULL (validated in application code against the fixed fifteen-key list in the template table above; not a database ENUM)
   - `order_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL
   - `related_type`: VARCHAR(32), NULL, DEFAULT NULL (for example `cancellation_request` or `return_request`)
   - `related_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL (loose link; the type selects the table)
@@ -1435,7 +1448,7 @@ Sent and cancelled rows are pruned after 90 days; unsent rows are never removed 
 - **Enum Values**:
   - `channel`: `email`, `whatsapp`.
   - `recipient_type`: `customer`, `owner`.
-  - `template_key`: none at database level; it is a `VARCHAR(40)` validated in application code against the fixed list: `order_received`, `order_shipped`, `order_rejected`, `cancellation_accepted`, `return_request_received`, `return_parcel_received`, `exchange_shipped`, `return_accepted`, `return_rejected`, `refund_done`, `payment_unfulfilled`, `owner_new_order`, `owner_cancellation_request`, `owner_return_request`.
+  - `template_key`: none at database level; it is a `VARCHAR(40)` validated in application code against the fixed list: `order_received`, `order_shipped`, `order_rejected`, `cancellation_accepted`, `return_request_received`, `return_parcel_received`, `exchange_shipped`, `return_accepted`, `return_rejected`, `return_sent_back`, `refund_done`, `payment_unfulfilled`, `owner_new_order`, `owner_cancellation_request`, `owner_return_request`.
 - **Retention**: sent or cancelled rows older than 90 days are deleted by the cleanup job. Rows still waiting to send are never deleted by it.
 
 ### Changes to the earlier tables
@@ -1466,23 +1479,24 @@ These foreign keys are declared ahead of the B2b tables in `db/schema_draft.sql`
 2. **Tracking decides the cancellation refund**: with no tracking ID, the refund is `orders.total_paise` and `includes_shipping = 1`; with a tracking ID, it is `orders.total_paise - orders.shipping_paise` and `includes_shipping = 0`. The order is cancelled either way.
 3. **Cancellation undo is the same 10-minute contract as Reject**: `undo_until = decided_at + 10 minutes`; Undo is allowed only while the refund is pending. It restores the previous order status, sets the request back to `status = 'requested'`, stamps `undone_at`, deletes the refund row, reverses the coupon release, cancels the queued email and reverses any restock with a guarded decrement. The same row can then be accepted again. A done refund blocks Undo.
 4. **Restock ticks are idempotent and traceable**: `restocked_at` is set once; a second tick does nothing. Every restock writes a `stock_movements` row with the matching `cancellation_request_id` or `return_request_id`. Undo writes a reversal movement and never deletes history. A cancellation restock may happen long after accept; it is independent of the 10-minute window.
-5. **One return or exchange request per order, one type per request**: `return_requests.order_id` is unique, forever. The customer chooses return or exchange, then the lines and quantities; `quantity` never exceeds the ordered quantity, checked in the application. A product with `return_eligible = 0` cannot be selected, and an existing request disables the option on the storefront.
-6. **The return ladder follows the parcel, not the click**: `requested` (shown as Awaiting parcel) → `received` → `accepted` or `rejected` → `completed`. The customer posts the parcel back at their own cost and the owner decides only after it arrives. Item received stamps `received_at` and can be undone only while no decision exists (`decided_at IS NULL`), returning the row to `requested`. A return is `completed` when its refund is marked done; an exchange is `completed` when the replacement's `shipped_at` is set.
+5. **One return or exchange request per order, one type per request**: `return_requests.order_id` is unique, forever. The customer chooses return or exchange, then the lines and quantities; `quantity` never exceeds the ordered quantity, checked in the application. A product with `return_eligible = 0` cannot be selected, and an existing request disables the option on the storefront. The customer's one chance is used from the moment the request is submitted, not when it is accepted, so a rejected request cannot be replaced by a second one.
+6. **The return ladder follows the parcel, not the click**: `requested` (shown as Awaiting parcel) → `received` → `accepted` or `rejected`; only an accepted request can reach `completed`. The customer posts the parcel back at their own cost and the owner decides only after it arrives. Item received stamps `received_at` and can be undone only while no decision exists (`decided_at IS NULL`), returning the row to `requested`. A return is `completed` when its refund is marked done; an accepted exchange when the replacement's `shipped_at` is set. A rejected request stays `rejected`, and its `shipped_at` records only the parcel going back.
 7. **A return or exchange decision is reversible for 10 minutes**: accept and reject both stamp `decided_at`, `decided_by` and `undo_until = decided_at + 10 minutes`, and both queue the customer email for `undo_until`. Undo returns the request to `received` (never `requested`), stamps `undone_at`, deletes the still-pending return refund (accept only), and cancels the queued email. A done refund blocks Undo. Undoing the Item received tick is a separate action and only possible before any decision.
 8. **Accepting a return creates the refund in the same transaction**: one pending `refunds` row with `kind = 'return'`, `return_request_id` set, and `refund_amount_paise` defaulting to the selected lines' product value. The amount is **editable by the owner before refunding**, so a coupon split can be handled by hand. `refund_includes_shipping = 1` only for a wrong or damaged item; otherwise the refund is product price only. Accepting an exchange creates no refund. Undoing an accept deletes the refund only while it is `pending`; a done refund refuses the undo.
 9. **Coupon release on a return is driven by the full money-back test**: when an order's refunds add up to `orders.total_paise`, release the coupon use in the same transaction. Partial refunds keep the redemption. The B2a rule that refunds never exceed the captured amount still applies to every return refund.
 10. **Restock is a post-accept reversible tick; exchange stock moves only on the shipment save**: Item received never moves stock. Restock is available only after `accepted`, increments the returned quantities, writes `stock_movements` rows with `return_request_id`, and stamps `restocked_at` once; its undo uses a guarded decrement and a reversal movement. For an exchange, the replacement is taken from stock with the guarded decrement and a movement only when the owner saves the replacement courier and tracking; the replacement must be the same product, in a different size or colour, or the same variant when damaged. Until that save the owner may change the replacement variant, recorded in `activity_log`, or choose **Refund instead**, which changes the type to `return` and creates the product-price refund in the same transaction. A failed guard refuses the save. Any price difference is paid outside the app and only `extra_payment_note` records it.
-11. **Notifications are durable and idempotent at the row level**: one row per intended email, `send_after` for delays, `sent_at` for success, `cancelled_at` for Undo, `attempts` and `last_error` for retries. The sending job must claim a row before sending and mark it sent afterwards; Undo always cancels the queued row rather than editing the email. `template_key` is a `VARCHAR(40)` validated in application code against the fixed fourteen-key list, so a new template is a code change and a release, not a migration.
+11. **Notifications are durable and idempotent at the row level**: one row per intended email, `send_after` for delays, `sent_at` for success, `cancelled_at` for Undo, `attempts` and `last_error` for retries. The sending job must claim a row before sending and mark it sent afterwards; Undo always cancels the queued row rather than editing the email. `template_key` is a `VARCHAR(40)` validated in application code against the fixed fifteen-key list, so a new template is a code change and a release, not a migration.
 12. **OTP and password-reset email is never queued here**: those messages carry secrets and are sent immediately. `notifications` holds only order, cancellation, return, exchange and refund messages with non-sensitive payloads.
 13. **Request rows are never hard-deleted**: `cancellation_requests`, `return_requests` and `return_request_items` are audit rows. Undo uses `undone_at`; it does not delete the request. All incoming foreign keys are `RESTRICT`.
 14. **All B2b times are IST**: request windows, `decided_at`, `received_at`, `restocked_at`, `shipped_at` and `send_after` follow the same IST rule as the rest of the schema.
+15. **A rejected request goes back in one outbound shipment paid by the owner**: once the undo window has closed (`undo_until` has passed), the owner sees **Send parcel back**, enters the courier (default pre-selected) and tracking ID, and the save stamps `shipped_at` and queues `return_sent_back` immediately. The owner pays the postage. The request stays `rejected`: it never becomes `completed`, and `shipped_at` is the record that the parcel went back. The same four columns (`courier_id`, `courier_name`, `tracking_id`, `shipped_at`) carry the replacement for an accepted exchange or the parcel back for a rejected request, never both. A shipment save is allowed only for an accepted exchange (the replacement) or a rejected request after its undo window; the application refuses anything else, and the Returns tab's **Needs action** filter lists `rejected` requests with `shipped_at IS NULL`.
 
 ### Relationship Summary
 
 This continues items 1-27 of the Part A, Part B1 and Part B2a summaries.
 
 28. **Orders and Cancellation Requests**: `orders` `1 : 1` `cancellation_requests` (enforced by the unique `order_id`), `ON DELETE RESTRICT`. A request may be accepted after the order has shipped; the ordering row keeps the tracking and refund decision. Undo of an accept leaves the same row at `requested`, so the same row is accepted again rather than a second request being created.
-29. **Orders and Return Requests**: `orders` `1 : 1` `return_requests` (enforced by the unique `order_id`), `ON DELETE RESTRICT`. One return or exchange per order, ever, and one type per request; the parcel ladder runs on that single row.
+29. **Orders and Return Requests**: `orders` `1 : 1` `return_requests` (enforced by the unique `order_id`), `ON DELETE RESTRICT`. One return or exchange per order, ever, and one type per request; the parcel ladder runs on that single row. The same row also carries one outbound shipment — the replacement for an accepted exchange, or the parcel going back for a rejected request — never both.
 30. **Return Requests and Items**: `return_requests` `1 : N` `return_request_items`, `ON DELETE RESTRICT`; each item also points at one `order_items` row and, for an exchange, one replacement `product_variant_sizes` row.
 31. **Reject Reasons and Returns**: `return_reject_reasons` `1 : N` `return_requests` via `reject_reason_id`, `ON DELETE RESTRICT`. Hidden reasons remain readable on old requests.
 32. **Refunds and Requests**: `cancellation_requests` `1 : N` `refunds` and `return_requests` `1 : N` `refunds`, both `ON DELETE RESTRICT`. In practice an accepted return has at most one live refund row, because Undo deletes a still-pending refund; this replaces the loose B2a pointers.
@@ -1493,7 +1507,7 @@ This continues items 1-27 of the Part A, Part B1 and Part B2a summaries.
 ### Questions
 
 1. **Can the owner decline a cancellation request?** — **Decided: no separate decline state.** `cancellation_requests.status` is only `requested` or `accepted`; a request is accepted (possibly after shipping, with tracking) or left pending. If declining becomes a real need, add a `rejected` status and a reason column in a later part.
-2. **When is an exchange `completed`?** — **Decided: when the replacement has shipped**, that is `shipped_at IS NOT NULL`. The old item's arrival is already recorded by Item received before the decision, so no second condition is needed. A return is `completed` when its refund is marked done.
+2. **When is an exchange `completed`?** — **Decided: when the replacement has shipped on an accepted exchange**, that is `status = 'accepted'` and `shipped_at IS NOT NULL`. The old item's arrival is already recorded by Item received before the decision, so no second condition is needed. A rejected exchange keeps `status = 'rejected'` even after `shipped_at` is set, because there `shipped_at` records the old item going back. A return is `completed` when its refund is marked done.
 3. **Is the return-window boundary inclusive?** — **Decided: yes, through 23:59:59 IST on `delivered_at` date + `return_window_days`.** A request created after that instant is refused. The boundary is evaluated in IST, like every other time in the schema.
 4. **How is the default return refund split when a coupon was used?** — **Open, recommendation: pre-fill the selected lines' paid value and let the owner edit it before refunding.** The order-level discount cannot be split perfectly per line, so the application should suggest a proportional share, show the captured total, and enforce the B2a cap. The owner's edited amount is what is stored.
 5. **What recipient field does WhatsApp use?** — **Open, recommendation: keep `channel = 'email'` until the provider is chosen.** The table stores `recipient_email` only; a WhatsApp implementation will need a recipient phone or provider address, added when that feature leaves scope B.
@@ -1503,9 +1517,9 @@ This continues items 1-27 of the Part A, Part B1 and Part B2a summaries.
 
 - **Cancellation or return Undo racing a manual refund**: the owner could refund in Razorpay and tick Refund done inside the 10-minute window. Undo must refuse when the refund row is already `done`; otherwise the request is reversed while the money is gone.
 - **Item received can be ticked before the parcel is really back**: the decision is then made on a parcel that is still in transit. Undo of the tick is allowed only while no decision exists, so the owner must be sure before deciding; after a decision, the only reversal is Undo of the decision.
-- **Rejecting a received parcel leaves a manual send-back**: nothing is refunded, no stock moves, and the item sits with the owner. The app records only `reject_note`, so the cost, courier and proof of sending it back to the customer are outside the system. The owner must keep that record elsewhere.
+- **The owner forgets to send a rejected parcel back**: nothing is refunded, no stock moves, and the item sits with the owner while the customer waits. Postage, courier and tracking are recorded only when the owner saves **Send parcel back**, so an unsaved rejection leaves no proof of sending. The **Needs action** filter (`status = 'rejected' AND shipped_at IS NULL`) keeps every such parcel visible, and the owner must treat it as a work queue; the `return_rejected` email already promises that tracking will follow.
 - **Exchange replacement can sell out before shipping**: the chosen variant may be gone by the time the owner ships. Changing the variant is allowed until `shipped_at` and is recorded in `activity_log`, and "Refund instead" turns the request into a return with a product-price refund; both must be refused once the replacement has shipped.
-- **`template_key` is free text at the database level**: an invalid key is no longer rejected by an ENUM. The application must validate it against the fixed fourteen-key list on every insert, and the sending job must refuse an unknown key, otherwise a typo silently becomes an unsendable row.
+- **`template_key` is free text at the database level**: an invalid key is no longer rejected by an ENUM. The application must validate it against the fixed fifteen-key list on every insert, and the sending job must refuse an unknown key, otherwise a typo silently becomes an unsendable row.
 - **Notification delivery is at-least-once**: a crash after the provider accepts an email but before `sent_at` is written causes a retry and a duplicate email. `attempts` and `last_error` make this visible, but there is no provider message ID yet. The job must be restart-safe and must not send a row whose `cancelled_at` is set.
 - **Delayed emails depend on the queue**: if the job stops, rejected, cancellation and return emails never arrive even though the refund is pending. Alert on the age of the oldest due unsent row, not just on job liveness.
 - **One request per order is a hard stop**: a customer who submits a return for one line cannot add another line later without the owner intervening. The storefront must make the type and the selection clear before submitting, because the unique key will reject a second request.
