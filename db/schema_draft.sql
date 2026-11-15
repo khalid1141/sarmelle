@@ -3,6 +3,7 @@
 -- Part A: Catalogue and Stock
 -- Part B1: Customers, Admin, Settings, Coupons
 -- Part B2a: Orders and Payments
+-- Part B2b: Cancellations, Returns, Notifications
 -- Target Engine: MySQL 8.0+ / MariaDB 10.5+
 -- Storage Engine: InnoDB
 -- Character Set: utf8mb4
@@ -327,14 +328,20 @@ CREATE TABLE IF NOT EXISTS `stock_movements` (
     `quantity_change` INT NOT NULL COMMENT 'Delta: new_quantity - old_quantity',
     `reason` VARCHAR(255) NOT NULL COMMENT 'e.g. Retail sale, Stock arrival, Audit correction',
     `order_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Sale that caused the movement; NULL for arrivals and corrections',
+    `cancellation_request_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Cancellation restock or its reversal; NULL for other movements',
+    `return_request_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Return restock or exchange replacement movement; NULL for other movements',
     `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'When movement occurred',
     INDEX `idx_stock_movements_variant_time` (`product_variant_size_id`, `created_at`),
     INDEX `idx_stock_movements_product_time` (`product_id`, `created_at`),
     INDEX `idx_stock_movements_order_id` (`order_id`),
+    INDEX `idx_stock_movements_cancellation_request_id` (`cancellation_request_id`),
+    INDEX `idx_stock_movements_return_request_id` (`return_request_id`),
     CONSTRAINT `fk_stock_movements_variant_size` FOREIGN KEY (`product_variant_size_id`) REFERENCES `product_variant_sizes` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
     CONSTRAINT `fk_stock_movements_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
     CONSTRAINT `fk_stock_movements_user` FOREIGN KEY (`user_id`) REFERENCES `admin_users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-    CONSTRAINT `fk_stock_movements_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+    CONSTRAINT `fk_stock_movements_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_stock_movements_cancellation_request` FOREIGN KEY (`cancellation_request_id`) REFERENCES `cancellation_requests` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_stock_movements_return_request` FOREIGN KEY (`return_request_id`) REFERENCES `return_requests` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
@@ -712,16 +719,20 @@ CREATE TABLE IF NOT EXISTS `refunds` (
     `requested_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     `done_at` DATETIME NULL DEFAULT NULL,
     `done_by` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Admin who ticked Refund done',
-    `cancellation_request_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Loose: FK added in Part B2b',
-    `return_request_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Loose: FK added in Part B2b',
+    `cancellation_request_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Cancellation request that caused this refund; NULL for other kinds',
+    `return_request_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Return request that caused this refund; NULL for other kinds',
     UNIQUE KEY `uq_refunds_razorpay_refund` (`razorpay_refund_id`),
     INDEX `idx_refunds_status_requested` (`status`, `requested_at`),
     INDEX `idx_refunds_order_id` (`order_id`),
     INDEX `idx_refunds_payment_id` (`payment_id`),
+    INDEX `idx_refunds_cancellation_request_id` (`cancellation_request_id`),
+    INDEX `idx_refunds_return_request_id` (`return_request_id`),
     CONSTRAINT `chk_refunds_done` CHECK ((`status` = 'pending' AND `done_at` IS NULL) OR (`status` = 'done' AND `done_at` IS NOT NULL)),
     CONSTRAINT `fk_refunds_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
     CONSTRAINT `fk_refunds_payment` FOREIGN KEY (`payment_id`) REFERENCES `payments` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-    CONSTRAINT `fk_refunds_done_by` FOREIGN KEY (`done_by`) REFERENCES `admin_users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+    CONSTRAINT `fk_refunds_done_by` FOREIGN KEY (`done_by`) REFERENCES `admin_users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_refunds_cancellation_request` FOREIGN KEY (`cancellation_request_id`) REFERENCES `cancellation_requests` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_refunds_return_request` FOREIGN KEY (`return_request_id`) REFERENCES `return_requests` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
@@ -741,6 +752,146 @@ CREATE TABLE IF NOT EXISTS `coupon_redemptions` (
     CONSTRAINT `fk_coupon_redemptions_coupon` FOREIGN KEY (`coupon_id`) REFERENCES `coupons` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
     CONSTRAINT `fk_coupon_redemptions_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
     CONSTRAINT `fk_coupon_redemptions_customer` FOREIGN KEY (`customer_id`) REFERENCES `customers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- =============================================================================
+-- PART B2b: CANCELLATIONS, RETURNS, EXCHANGES, NOTIFICATIONS
+-- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- 35. cancellation_requests (customer request; owner accepts with 10-minute undo)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `cancellation_requests` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `order_id` BIGINT UNSIGNED NOT NULL,
+    `status` ENUM('requested', 'accepted') NOT NULL DEFAULT 'requested',
+    `requested_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `decided_at` DATETIME NULL DEFAULT NULL,
+    `decided_by` BIGINT UNSIGNED NULL DEFAULT NULL,
+    `courier_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Entered at accept only when the order was already shipped',
+    `courier_name` VARCHAR(100) NULL DEFAULT NULL COMMENT 'Snapshot of couriers.name when entered at accept',
+    `tracking_id` VARCHAR(100) NULL DEFAULT NULL COMMENT 'Entered at accept when the order was already shipped',
+    `restocked_at` DATETIME NULL DEFAULT NULL COMMENT 'Restock tick; may be set later, independently of the accept undo window',
+    `undo_until` DATETIME NULL DEFAULT NULL COMMENT 'decided_at + 10 minutes on accept',
+    `undone_at` DATETIME NULL DEFAULT NULL COMMENT 'Stamped when the accept is undone; the row is never deleted',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX `idx_cancellation_requests_order` (`order_id`, `requested_at`),
+    INDEX `idx_cancellation_requests_status_requested` (`status`, `requested_at`),
+    INDEX `idx_cancellation_requests_decided_by` (`decided_by`),
+    INDEX `idx_cancellation_requests_courier` (`courier_id`),
+    INDEX `idx_cancellation_requests_undo_until` (`undo_until`),
+    CONSTRAINT `fk_cancellation_requests_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_cancellation_requests_decided_by` FOREIGN KEY (`decided_by`) REFERENCES `admin_users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_cancellation_requests_courier` FOREIGN KEY (`courier_id`) REFERENCES `couriers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 36. return_reject_reasons (managed list; hidden with is_active, never deleted)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `return_reject_reasons` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `label` VARCHAR(150) NOT NULL,
+    `is_active` TINYINT(1) NOT NULL DEFAULT 1 COMMENT '0 = hidden from the reject dropdown; never deleted',
+    `display_order` INT UNSIGNED NOT NULL DEFAULT 0,
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_return_reject_reasons_label` (`label`),
+    INDEX `idx_return_reject_reasons_active_order` (`is_active`, `display_order`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO `return_reject_reasons` (`label`, `display_order`) VALUES
+    ('Item used, washed or altered', 1),
+    ('Tags or original packaging missing', 2),
+    ('Product not eligible for return', 3),
+    ('Reason not covered by the return policy', 4),
+    ('Item received does not match the returned order', 5),
+    ('Other', 6);
+
+-- -----------------------------------------------------------------------------
+-- 37. return_requests (one return or exchange request per order)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `return_requests` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `order_id` BIGINT UNSIGNED NOT NULL,
+    `type` ENUM('return', 'exchange') NOT NULL,
+    `status` ENUM('requested', 'accepted', 'rejected', 'received', 'completed') NOT NULL DEFAULT 'requested',
+    `reason` VARCHAR(255) NOT NULL COMMENT 'Customer reason from the request form',
+    `note` TEXT NULL DEFAULT NULL COMMENT 'Optional customer note',
+    `requested_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `decided_at` DATETIME NULL DEFAULT NULL,
+    `decided_by` BIGINT UNSIGNED NULL DEFAULT NULL,
+    `reject_reason_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+    `reject_note` VARCHAR(255) NULL DEFAULT NULL,
+    `undo_until` DATETIME NULL DEFAULT NULL COMMENT 'decided_at + 10 minutes',
+    `undone_at` DATETIME NULL DEFAULT NULL COMMENT 'Stamped when the decision is undone; the row is never deleted',
+    `received_at` DATETIME NULL DEFAULT NULL COMMENT 'Item received tick; reversible',
+    `restocked_at` DATETIME NULL DEFAULT NULL COMMENT 'Restock tick; only after received_at, reversible',
+    `refund_amount_paise` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Editable before refunding; NULL for exchanges',
+    `refund_includes_shipping` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 only when we sent a wrong or damaged item',
+    `courier_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Replacement courier for an exchange',
+    `courier_name` VARCHAR(100) NULL DEFAULT NULL COMMENT 'Snapshot of couriers.name for an exchange',
+    `tracking_id` VARCHAR(100) NULL DEFAULT NULL COMMENT 'Replacement tracking for an exchange',
+    `shipped_at` DATETIME NULL DEFAULT NULL COMMENT 'Replacement shipped at; exchange only',
+    `extra_payment_note` VARCHAR(255) NULL DEFAULT NULL COMMENT 'Optional note such as extra Rs collected',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_return_requests_order` (`order_id`),
+    INDEX `idx_return_requests_status_requested` (`status`, `requested_at`),
+    INDEX `idx_return_requests_decided_by` (`decided_by`),
+    INDEX `idx_return_requests_reject_reason` (`reject_reason_id`),
+    INDEX `idx_return_requests_courier` (`courier_id`),
+    INDEX `idx_return_requests_undo_until` (`undo_until`),
+    CONSTRAINT `fk_return_requests_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_return_requests_decided_by` FOREIGN KEY (`decided_by`) REFERENCES `admin_users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_return_requests_reject_reason` FOREIGN KEY (`reject_reason_id`) REFERENCES `return_reject_reasons` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_return_requests_courier` FOREIGN KEY (`courier_id`) REFERENCES `couriers` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 38. return_request_items (selected lines and exchange replacement variants)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `return_request_items` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `return_request_id` BIGINT UNSIGNED NOT NULL,
+    `order_item_id` BIGINT UNSIGNED NOT NULL,
+    `quantity` INT UNSIGNED NOT NULL,
+    `replacement_variant_size_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Exchange only: same product, different size or colour, or the same variant if damaged',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_return_request_items_request_item` (`return_request_id`, `order_item_id`),
+    INDEX `idx_return_request_items_order_item` (`order_item_id`),
+    INDEX `idx_return_request_items_replacement` (`replacement_variant_size_id`),
+    CONSTRAINT `chk_return_request_items_quantity` CHECK (`quantity` > 0),
+    CONSTRAINT `fk_return_request_items_request` FOREIGN KEY (`return_request_id`) REFERENCES `return_requests` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_return_request_items_order_item` FOREIGN KEY (`order_item_id`) REFERENCES `order_items` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_return_request_items_replacement` FOREIGN KEY (`replacement_variant_size_id`) REFERENCES `product_variant_sizes` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 39. notifications (durable email queue and sent log; never OTP or reset mail)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `notifications` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `channel` ENUM('email', 'whatsapp') NOT NULL DEFAULT 'email',
+    `recipient_type` ENUM('customer', 'owner') NOT NULL,
+    `recipient_email` VARCHAR(255) NOT NULL,
+    `template_key` ENUM('order_received', 'order_shipped', 'order_rejected', 'cancellation_accepted', 'return_accepted', 'return_rejected', 'refund_done', 'payment_unfulfilled', 'owner_new_order', 'owner_cancellation_request', 'owner_return_request') NOT NULL,
+    `order_id` BIGINT UNSIGNED NULL DEFAULT NULL,
+    `related_type` VARCHAR(32) NULL DEFAULT NULL COMMENT 'e.g. cancellation_request, return_request',
+    `related_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Loose link; no FK because related_type selects the table',
+    `payload` TEXT NULL DEFAULT NULL COMMENT 'JSON of non-sensitive template values only',
+    `send_after` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Delayed sends wait for this IST instant',
+    `sent_at` DATETIME NULL DEFAULT NULL,
+    `cancelled_at` DATETIME NULL DEFAULT NULL COMMENT 'Set by Undo; a cancelled row is never sent',
+    `attempts` TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    `last_error` VARCHAR(255) NULL DEFAULT NULL,
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX `idx_notifications_send` (`sent_at`, `cancelled_at`, `send_after`),
+    INDEX `idx_notifications_created_at` (`created_at`),
+    INDEX `idx_notifications_order_id` (`order_id`),
+    INDEX `idx_notifications_related` (`related_type`, `related_id`),
+    CONSTRAINT `fk_notifications_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;

@@ -783,7 +783,7 @@ This part adds the order, order-item, status-history, payment, webhook, refund a
 
 - **Cart is still not a table.** Orders are written only when the customer clicks Pay, from data the server has just re-read.
 - **Orders are never hard-deleted.** There is no `deleted_at` on `orders` and every child table uses `ON DELETE RESTRICT`; status is the only lifecycle. (The single exception is `stock_holds`, which is disposable by design.)
-- **Cancellations, returns and exchanges are Part B2b.** This part provides the status values, the refund rows and the two nullable loose columns (`refunds.cancellation_request_id`, `refunds.return_request_id`) that B2b will attach.
+- **Cancellations, returns and exchanges are Part B2b.** This part provides the status values, the refund rows and the two nullable request columns (`refunds.cancellation_request_id`, `refunds.return_request_id`); Part B2b defines the request tables and turns those columns into real foreign keys.
 - **No payer details, ever.** No UPI IDs, card numbers, payment methods, bank references or raw webhook bodies are stored anywhere in this part.
 
 ### How checkout works (plain words)
@@ -792,7 +792,7 @@ This part adds the order, order-item, status-history, payment, webhook, refund a
 2. The server then asks Razorpay for an order, using the generated order number as the receipt, and writes **one transaction**: the `orders` row with status `payment_pending`, one `order_items` row per line with all report snapshots, one `stock_holds` row per variant, the `coupon_redemptions` row plus the guarded `coupons.used_count` increment, and a `payments` row with status `created` and that `razorpay_order_id`. Availability is re-checked with the variant rows locked inside this transaction, and the hold expiry is now + `settings.payment_hold_minutes`, stored in `orders.hold_expires_at` and in each `stock_holds.expires_at`. No network call happens inside the transaction; if the write fails, the unused Razorpay order is harmless and the customer sees an error.
 3. The browser opens the Razorpay payment screen with its timeout option set to `payment_hold_minutes * 60` seconds, so the screen closes when the hold ends. Nothing is deducted from physical stock yet. This only closes the screen: the server still enforces expiry because Razorpay orders do not expire by themselves. A payment completed exactly at the boundary follows the unfulfilled-payment path below. Behaviour with UPI apps on phones is to be verified in Milestone 8.
 4. When Razorpay reports the payment, the server verifies the signature first, then loads the payment row by `razorpay_order_id` and acts only if the order is still `payment_pending` and its `hold_expires_at` is still in the future. In **one transaction** it sets the order to `new` and stamps `paid_at`, marks the payment `captured` with `captured_at`, runs the guarded stock decrement (`quantity >= ?`) for each line, writes one `stock_movements` row per line, and deletes the order's `stock_holds` rows. Then the "Order received" email to the customer and the new-order email to the owner go out.
-5. If the guarded stock decrement fails (or the holds are gone), the server rolls back the decrement, sets the order to `cancelled` with `cancel_reason = 'stock_unavailable'`, keeps `paid_at` and the captured payment, creates an `unfulfilled_payment` refund (`status = 'pending'`, full amount including shipping) and queues a customer email (template added in B2b). If the hold has already expired, the cleanup job's `payment_expired` cancellation stands and the payment follows the same unfulfilled-payment path.
+5. If the guarded stock decrement fails (or the holds are gone), the server rolls back the decrement, sets the order to `cancelled` with `cancel_reason = 'stock_unavailable'`, keeps `paid_at` and the captured payment, creates an `unfulfilled_payment` refund (`status = 'pending'`, full amount including shipping) and queues a customer email with the `payment_unfulfilled` template (see Part B2b). If the hold has already expired, the cleanup job's `payment_expired` cancellation stands and the payment follows the same unfulfilled-payment path.
 
 Because the order already exists before payment, a failed or abandoned payment leaves audit rows behind, and the same webhook arriving twice cannot create two sales: the status guard and the unique Razorpay IDs make the whole step idempotent.
 
@@ -815,7 +815,7 @@ So pending checkouts and expired unpaid orders never clutter the list, while a r
 
 Razorpay can confirm a payment after the 5-minute hold has already expired, or verification can succeed just as another checkout takes the last unit. In both cases the money is real, but the order cannot be fulfilled.
 
-The server records the capture on the existing `payments` row (status back to `captured`, `razorpay_payment_id` filled, `captured_at` set) and stamps `orders.paid_at`. The order **stays or becomes cancelled** — it is not resurrected and stock is not re-held or taken. A payment that arrives after expiry keeps `cancel_reason = 'payment_expired'`; a payment verified while the order is still `payment_pending` but whose guarded stock decrement fails is set to `cancelled` with `cancel_reason = 'stock_unavailable'`. In both cases a `refunds` row is written with `kind = 'unfulfilled_payment'`, the full captured amount including shipping, `status = 'pending'`, and a customer email is queued (template added in B2b). That row appears in the admin's **Refund pending** list with the Razorpay payment ID, exactly like ADMIN_SPEC section 9 requires, and the owner refunds it manually.
+The server records the capture on the existing `payments` row (status back to `captured`, `razorpay_payment_id` filled, `captured_at` set) and stamps `orders.paid_at`. The order **stays or becomes cancelled** — it is not resurrected and stock is not re-held or taken. A payment that arrives after expiry keeps `cancel_reason = 'payment_expired'`; a payment verified while the order is still `payment_pending` but whose guarded stock decrement fails is set to `cancelled` with `cancel_reason = 'stock_unavailable'`. In both cases a `refunds` row is written with `kind = 'unfulfilled_payment'`, the full captured amount including shipping, `status = 'pending'`, and a customer email is queued with the `payment_unfulfilled` template (see Part B2b). That row appears in the admin's **Refund pending** list with the Razorpay payment ID, exactly like ADMIN_SPEC section 9 requires, and the owner refunds it manually.
 
 If the customer still wants the goods they place a new order. Nothing links the two automatically.
 
@@ -1017,20 +1017,22 @@ Everything else is refused: no `new -> delivered`, no going back to `payment_pen
   - `requested_at`: DATETIME, NOT NULL, DEFAULT CURRENT_TIMESTAMP
   - `done_at`: DATETIME, NULL, DEFAULT NULL
   - `done_by`: BIGINT UNSIGNED, NULL, DEFAULT NULL (admin who ticked Refund done)
-  - `cancellation_request_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL (loose; FK added in B2b)
-  - `return_request_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL (loose; FK added in B2b)
+  - `cancellation_request_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL (the accepted cancellation that created this refund; NULL for other kinds)
+  - `return_request_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL (the accepted return that created this refund; NULL for other kinds)
 - **Primary Key**: `id`
 - **Foreign Keys**:
   - `fk_refunds_order`: `order_id` REFERENCES `orders(id)` ON DELETE RESTRICT ON UPDATE CASCADE
   - `fk_refunds_payment`: `payment_id` REFERENCES `payments(id)` ON DELETE RESTRICT ON UPDATE CASCADE
   - `fk_refunds_done_by`: `done_by` REFERENCES `admin_users(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_refunds_cancellation_request`: `cancellation_request_id` REFERENCES `cancellation_requests(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_refunds_return_request`: `return_request_id` REFERENCES `return_requests(id)` ON DELETE RESTRICT ON UPDATE CASCADE
 - **Unique Constraints**: `uq_refunds_razorpay_refund` (`razorpay_refund_id`) — the same Razorpay refund cannot be recorded twice (several NULLs are allowed while pending).
-- **Indexes**: `idx_refunds_status_requested` (`status`, `requested_at`) — the Refund pending list (`status = 'pending'`, oldest first); `idx_refunds_order_id` (`order_id`) — refunds on one order; `idx_refunds_payment_id` (`payment_id`) — refunds against one payment and FK.
+- **Indexes**: `idx_refunds_status_requested` (`status`, `requested_at`) — the Refund pending list (`status = 'pending'`, oldest first); `idx_refunds_order_id` (`order_id`) — refunds on one order; `idx_refunds_payment_id` (`payment_id`) — refunds against one payment and FK; `idx_refunds_cancellation_request_id` (`cancellation_request_id`) and `idx_refunds_return_request_id` (`return_request_id`) — the request that caused the refund and its FK.
 - **CHECK constraints**: `chk_refunds_done` (`(status = 'pending' AND done_at IS NULL) OR (status = 'done' AND done_at IS NOT NULL)`). `done_by` is app-required when `status = 'done'`.
 - **Enum Values**:
   - `kind`: `reject`, `cancellation`, `return`, `unfulfilled_payment`.
   - `status`: `pending`, `done`.
-- **Amounts**: `reject`, `cancellation` and `unfulfilled_payment` always store the full amount the customer paid with `includes_shipping = 1` (reject is explicitly "full, including shipping"). `unfulfilled_payment` covers both a payment captured after hold expiry and a payment verified when the guarded stock decrement fails. `return` amounts and their shipping treatment are decided in B2b. Rows are never deleted once `done`; a pending row created by a reject is removed only if that reject is undone inside its window.
+- **Amounts**: `reject`, `cancellation` and `unfulfilled_payment` always store the full amount the customer paid with `includes_shipping = 1` (reject is explicitly "full, including shipping"). `unfulfilled_payment` covers both a payment captured after hold expiry and a payment verified when the guarded stock decrement fails. `return` amounts are the editable product price, with shipping included only when we sent a wrong or damaged item (`includes_shipping = 1`). Rows are never deleted once `done`; a pending row created by a reject is removed only if that reject is undone inside its window.
 
 #### 34. `coupon_redemptions`
 
@@ -1083,7 +1085,7 @@ Both foreign keys are declared ahead of the `orders` table in `db/schema_draft.s
 4. **Snapshots are never updated**: customer name/email/phone, address, product name, category, sub-category, description, size, set type, colour, fabric, MRP, price paid, image path, courier name and coupon code are copies. Reports and invoices read only these copies, so they stay correct after anonymisation, renaming, re-categorising or price changes.
 5. **Orders are never hard-deleted**: there is no `deleted_at` and no delete route. Child tables use `ON DELETE RESTRICT` (except `stock_holds`, whose rows are disposable), so the history cannot be broken accidentally. Cancelled and rejected orders remain visible and searchable.
 6. **`used_count` is driven by `coupon_redemptions`**: at order creation, increment with the guarded update from Part B1 — `UPDATE coupons SET used_count = used_count + 1 WHERE id = ? AND is_active = 1 AND (usage_limit IS NULL OR used_count < usage_limit)` — and treat zero affected rows as "coupon no longer available", aborting the checkout. When an order is rejected, cancelled or fully refunded, do it in the same transaction as the status change: first claim the release with `UPDATE coupon_redemptions SET released_at = NOW() WHERE order_id = ? AND released_at IS NULL`, and only if that affected one row decrement with `UPDATE coupons SET used_count = used_count - 1 WHERE id = ? AND used_count > 0`. Claiming before decrementing means a second cancel path cannot decrement twice. Undo of a reject reverses both (clear `released_at`, guarded increment); if the increment fails because the limit is now reached, the undo is refused and the transaction rolls back.
-7. **Coupon use is released on full money-back only**: reject and cancellation always release; a delivered order releases when its refunds add up to the full order total (the return-driven case is B2b's job). A partial refund keeps the redemption, because the customer kept the discount on what they kept.
+7. **Coupon use is released on full money-back only**: reject and cancellation always release; a delivered order releases when its refunds add up to the full order total (the return refund path is defined in B2b). A partial refund keeps the redemption, because the customer kept the discount on what they kept.
 8. **Payment verification is server-side and idempotent**: verify the Razorpay signature before reading or writing anything, resolve the attempt by unique `razorpay_order_id`, and only act when the order is still `payment_pending`. The same webhook delivered twice changes nothing the second time, and the stock decrement, movement rows, hold deletion, payment update and status change are one transaction.
 9. **No payer data is stored**: no UPI IDs, card numbers, CVVs, bank references, payment methods or raw webhook bodies. Only `razorpay_order_id`, `razorpay_payment_id`, `razorpay_refund_id`, `event_type`, amounts and outcome are kept. Webhook bodies routinely contain UPI IDs, so they are parsed in memory and discarded.
 10. **Holds expire by time, not by a job**: availability ignores any hold with `expires_at <= NOW()` even if the cleanup job has not run. The job only tidies rows, closes abandoned orders and releases coupons; correctness never depends on its timing.
@@ -1107,7 +1109,7 @@ This continues items 1-19 of the Part A and Part B1 summaries.
 22. **Orders and Status History**: `orders` `1 : N` `order_status_history`, `ON DELETE RESTRICT`; `admin_users` `1 : N` the same table via `admin_user_id` (`NULL` for system or customer actions). This is where the 10-minute reject undo lives.
 23. **Orders and Payments**: `orders` `1 : N` `payments` (retries are separate rows, one unique Razorpay order each), `ON DELETE RESTRICT`. Payment rows are financial evidence and are never deleted.
 24. **Webhook Events**: `payment_webhook_events` is standalone, linked to `payments` only loosely by `razorpay_payment_id`. It exists for deduplication, retry and diagnosis, not for reporting.
-25. **Orders, Payments and Refunds**: `orders` `1 : N` `refunds` and `payments` `1 : N` `refunds`, both `ON DELETE RESTRICT`; `admin_users` `1 : N` `refunds.done_by`. `refunds.cancellation_request_id` and `refunds.return_request_id` are loose columns that become foreign keys in B2b.
+25. **Orders, Payments and Refunds**: `orders` `1 : N` `refunds` and `payments` `1 : N` `refunds`, both `ON DELETE RESTRICT`; `admin_users` `1 : N` `refunds.done_by`. `refunds.cancellation_request_id` and `refunds.return_request_id` are nullable `ON DELETE RESTRICT` foreign keys to the request that caused the refund (wired in B2b).
 26. **Coupons and Orders**: `coupons` `N : M` `orders` via `coupon_redemptions`, which is unique on `order_id` (one code per order) and also records `customer_id` for the repeat-use rule. `coupons.used_count` is the cached count of unreleased redemptions.
 27. **Stock and Orders**: `orders` `1 : N` `stock_holds` with `ON DELETE CASCADE` (holds are disposable reservations) and `orders` `1 : N` `stock_movements` with `ON DELETE RESTRICT` (the immutable movement log now points at the sale that caused it). This supersedes item 10, which described holds as keyed by a checkout reference.
 
@@ -1129,11 +1131,330 @@ This continues items 1-19 of the Part A and Part B1 summaries.
 - **Undo racing a manual refund**: the owner could refund in Razorpay and mark it done inside the 10-minute window. The undo must refuse when the refund row is already `done`; otherwise the order returns to `new` while the money is gone.
 - **Undo and restocked stock**: undo re-checks availability with a guarded decrement. If the units sold in between, the undo fails and the admin is stuck with a rejected order that still has stock returned. The message must offer the alternative (leave rejected, refund continues) instead of silently succeeding.
 - **`used_count` drift**: the counter is now driven by two paths (claim/increment, release/decrement) and one reversal (undo). Any code path that changes `released_at` without touching `used_count`, or the reverse, breaks the guard. Recompute from `coupon_redemptions` when in doubt, as flagged in B1.
-- **Coupon release on full return refunds is not yet wired**: until B2b sums return refunds, a delivered order whose goods are all returned will not release its coupon. The redemption row stays live, which is the safe direction (no overuse) but temporarily under-counts availability.
+- **Coupon release on full return refunds depends on the B2b sum check**: a delivered order releases only when its refunds add up to the full order total. If the application forgets to run that check after a return refund, the redemption row stays live, which under-counts availability but never allows overuse.
 - **Webhook ordering**: a capture can arrive before the local payment row is visible, or be retried after a partial failure. Events are therefore stored first with `processed_at IS NULL` and retried; an event with no matching payment gets `outcome = 'unmatched'` and must be investigated, not dropped.
 - **`payments` rows are updated in place**: there is no history of status changes per row, only `created_at`, `captured_at` and `failure_code`. If reconciliation ever needs every intermediate state, `payment_webhook_events` is the only record — another reason to keep it long enough.
 - **Reports depend on snapshots being written completely**: a missing `image_path` or `set_type_name` at checkout cannot be backfilled from the product later, because the product may have changed. The checkout write path must copy every report field in the same transaction.
 - **`description` is copied per line**: a long description repeated across items grows the order tables. It is the price of a stable report; if size becomes a problem, truncate at write time, not at report time.
 - **Case-insensitive order number lookups**: `utf8mb4_unicode_ci` means `SRM-7K2Q9M` and `srm-7k2q9m` are the same order. This is convenient for customers but means the displayed form is a formatting convention, not a separate identifier.
 - **No delete path at all**: a genuinely bogus test order can only be cancelled, never removed, and its `payments`/`refunds` rows stay. Development and staging must not share a database with production, or test noise will live forever.
+
+## Schema design draft - Part B2b: cancellations, returns, notifications
+
+### Scope
+
+Part B2a created orders, payments, refunds and the 10-minute Reject undo. This part adds the customer-facing request tables for cancellation, return and exchange, the managed return-reject reasons, and one durable notification queue/log. It also replaces the two loose refund pointers from B2a with real foreign keys and adds two request pointers to `stock_movements`.
+
+It is design only: no SQL is executed.
+
+- **A cancellation is a request, not an instant cancellation.** The order changes only when the owner accepts. A request may be accepted after the order has shipped, which changes the refund from "full including shipping" to "product price only".
+- **One return or exchange per order.** The `order_id` unique key enforces it; the customer chooses which lines and quantities are coming back.
+- **Refunds are still manual.** Accepting a cancellation or return creates a pending `refunds` row. The owner performs the refund in Razorpay and ticks Refund done, exactly as in B2a.
+- **Exchanges move stock only when the replacement is actually shipped.** Saving the replacement courier and tracking is the moment the guarded decrement and `stock_movements` row happen.
+- **Notifications are rows, not fire-and-forget calls.** The same table is the queue and the sent log, so delayed emails survive a restart and Undo can cancel a queued email.
+- **The cart is still not stored.** Nothing in this part adds a cart, a customer session table or a payment method.
+
+### Cancellations (plain words)
+
+A customer can create a cancellation request while the order is `new`. Once the owner has marked the order `shipped`, the customer can no longer create a new request, but a request that already exists can still be accepted.
+
+1. **Request.** The customer submits a reason-free request (the request itself is the signal). A `cancellation_requests` row is written with `status = 'requested'`, and an `owner_cancellation_request` email is queued to the owner. The order, stock and coupon are untouched.
+2. **Accept, not shipped yet (no tracking ID).** The owner accepts. `decided_at` and `decided_by` are stamped, `undo_until = decided_at + 10 minutes`, the order becomes `cancelled` with `cancel_reason = 'customer_request'`, `cancelled_at` is set, the coupon use is released, and a pending `refunds` row is written with `kind = 'cancellation'`, `includes_shipping = 1`, and the **full order total including shipping**. A `cancellation_accepted` email is queued with `send_after = undo_until`.
+3. **Accept, already shipped (tracking ID entered).** The owner enters the courier and tracking ID on the accept form (optional fields, but supplying them changes the money). The same accept transaction copies `courier_id`, `courier_name` and `tracking_id` onto the cancellation request, cancels the order the same way, and writes the pending refund with `includes_shipping = 0` and the **product price only**: `orders.total_paise - orders.shipping_paise`. The shipping fee stays with the owner. The delayed `cancellation_accepted` email can show the tracking number.
+4. **Restock is a separate tick.** The Restock checkbox is unticked by default. Ticking it at accept, or later once the parcel is physically back, increments each affected `product_variant_sizes.quantity`, writes one `stock_movements` row per line with `cancellation_request_id` set, and stamps `restocked_at`. A second tick does nothing.
+5. **Undo within 10 minutes.** The accept is reversed only while the refund is still `pending`: the order returns to its previous status (`new` or `shipped`), `undone_at` is stamped on the cancellation row, the pending refund row is deleted, the coupon release is reversed, the queued customer email is cancelled with `cancelled_at`, and any restock is taken back out with a guarded decrement and a reversal movement. If the refund is already `done`, the undo is refused.
+6. **After 10 minutes** the undo window is closed in the application. The cancellation stands and Restock may still be ticked later.
+
+### Returns (plain words)
+
+A return is available only after the order is `delivered`, only inside the return window, and only for products with `return_eligible = 1`. The customer can return some lines or all of them, with a quantity no greater than the ordered quantity.
+
+1. **Request.** The customer chooses `type = 'return'`, selects the `order_items` and quantities, gives a reason and an optional note. A `return_requests` row is written with `status = 'requested'`, the selected lines go into `return_request_items`, and an `owner_return_request` email is queued to the owner.
+2. **Accept or Reject.** Either decision stamps `decided_at`, `decided_by` and `undo_until = decided_at + 10 minutes`, and queues the customer email with `send_after = undo_until`.
+3. **Reject.** `status = 'rejected'`, `reject_reason_id` comes from the managed `return_reject_reasons` list, and `reject_note` is optional. Nothing is refunded and stock does not move. Undo inside 10 minutes returns the request to `requested`, stamps `undone_at`, and cancels the queued email.
+4. **Accept.** `status = 'accepted'`. A pending `refunds` row is written with `kind = 'return'`, `return_request_id` set, and the current `refund_amount_paise`. The amount defaults to the selected lines' product value and is **editable by the owner before refunding**, so a coupon split can be handled by hand. Shipping is included only when the fault was ours (wrong or damaged item), which sets `refund_includes_shipping = 1`. The refund can never take the order's total refunds above the captured payment.
+5. **Coupon release.** When the sum of that order's refunds reaches `orders.total_paise`, the coupon use is released. A partial return keeps the redemption, because the customer kept the discount on what they kept.
+6. **Item received.** After the parcel arrives, the owner ticks **Item received**: `received_at` is stamped and `status = 'received'`. This tick can be undone while `restocked_at IS NULL`.
+7. **Restock.** Ticking **Restock** increments the returned quantities, writes `stock_movements` rows with `return_request_id`, and stamps `restocked_at`. It is available only after Item received. Undo takes the units back out with a guarded decrement; if they have sold, the undo is refused.
+8. **Completed.** When the owner ticks Refund done in the Refund pending list, the return is finished and the application marks the request `completed`. Undo is no longer possible once the refund is done.
+
+### Exchanges (plain words)
+
+An exchange uses the same request and decision path, but `type = 'exchange'`, no refund row is created, and every selected line must name a **replacement variant**.
+
+- The replacement must be the **same product**, either a different size or colour, or the same variant when the item was damaged.
+- On accept, `status = 'accepted'` and the delayed `return_accepted` email is queued. No stock moves yet.
+- When the owner saves the replacement courier and tracking ID, the server runs the guarded stock decrement for each replacement line, writes a `stock_movements` row with `return_request_id`, copies `courier_name`, stores `courier_id`, `tracking_id` and `shipped_at`, and only then counts the replacement as sent. If the guarded decrement fails, the save is refused and the owner picks another variant.
+- The old item follows the same **Item received** and **Restock** ticks as a return. The exchange is `completed` when the replacement has shipped (`shipped_at` set) and the old item has been received (`received_at` set).
+- Any price difference is paid outside the app. `extra_payment_note` is the only record, for example "extra Rs 200 collected". No payment or refund row is created for the difference.
+
+### Return window (plain words)
+
+The window is the existing `settings.return_window_days` value, counted from `orders.delivered_at`.
+
+- The last moment to request is **23:59:59 IST on the delivered date plus `return_window_days`**. For example, delivered on 1 November with a 7-day window means requests are accepted through the end of 8 November IST.
+- The application refuses a request outside the window, even if the customer can still see the order.
+- Orders inside the window are highlighted in the admin; orders outside it have the return option empty.
+- One request per order, return or exchange, is enforced by `uq_return_requests_order`; once a request exists, the storefront disables the option for that order.
+- A product with `return_eligible = 0` cannot be selected, even inside the window.
+
+### Reports (plain words)
+
+**Sales report** (one row per product in an order) reads `order_items` joined to `orders`:
+
+- Order ID: `orders.order_number`
+- order date: `orders.created_at`
+- product name, category, sub-category, description, size, set type, colour, fabric: the matching `order_items` snapshot columns
+- sale price: `order_items.price_paise` (the price actually charged per unit)
+- price: `order_items.mrp_paise` (the MRP at order time)
+- place: `orders.ship_city` (`ship_state` is available if the owner needs it)
+- delivered date: `orders.delivered_at`
+
+**Returns report** reuses the same product snapshots through `return_request_items` → `order_items` → `orders`, and adds:
+
+- return initiated date: `return_requests.requested_at`
+- reason: `return_requests.reason`, with `return_reject_reasons.label` shown when rejected
+- confirmed date: `return_requests.decided_at`
+
+The report covers both return and exchange requests; `return_requests.type` and `status` are available as filters. Quantities come from `return_request_items.quantity`.
+
+### Notifications (plain words)
+
+`notifications` is the durable email queue and the sent log. OTP and password-reset emails are sent immediately and **never stored in this table**; they contain secrets and have no place in a 90-day log.
+
+Emails are queued with `send_after` set to the intended sending time. The sending job picks rows where `sent_at IS NULL`, `cancelled_at IS NULL` and `send_after <= NOW()`, sends them, then sets `sent_at`. A failure increments `attempts` and stores `last_error` so the next run retries. Undo sets `cancelled_at` on the queued row, so a cancelled decision never reaches the customer.
+
+| Template key | Recipient | Queued when | Delay |
+| --- | --- | --- | --- |
+| `order_received` | customer | Payment verified and order becomes `new` | immediate |
+| `order_shipped` | customer | Owner ships, with tracking | immediate |
+| `order_rejected` | customer | Owner rejects | `undo_until` |
+| `cancellation_accepted` | customer | Owner accepts a cancellation | `undo_until` |
+| `return_accepted` | customer | Owner accepts a return or exchange | `undo_until` |
+| `return_rejected` | customer | Owner rejects a return or exchange | `undo_until` |
+| `refund_done` | customer | Owner ticks Refund done | immediate |
+| `payment_unfulfilled` | customer | B2a writes an `unfulfilled_payment` refund for a paid-but-cancelled order | immediate |
+| `owner_new_order` | owner | Payment verified and order becomes `new` | immediate |
+| `owner_cancellation_request` | owner | Customer creates a cancellation request | immediate |
+| `owner_return_request` | owner | Customer creates a return or exchange request | immediate |
+
+`channel` defaults to `email`. `whatsapp` is reserved for the later provider; nothing in this part sends it. `recipient_type` separates customer and owner rows. `order_id` is the order, while `related_type` and `related_id` point loosely at the cancellation or return request that caused the email.
+
+Sent and cancelled rows are pruned after 90 days; unsent rows are never removed by that cleanup. The payload is JSON text and may contain only non-sensitive template values, such as names, amounts, order number and dates. It must never contain UPI IDs, card data, passwords, OTPs or reset tokens.
+
+### Table Specifications
+
+#### 35. `cancellation_requests`
+
+- **Purpose**: One row per customer cancellation request and the owner's decision. It records whether tracking was supplied at accept, which changes the refund, and the independent Restock tick.
+- **Columns**:
+  - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
+  - `order_id`: BIGINT UNSIGNED, NOT NULL
+  - `status`: ENUM, NOT NULL, DEFAULT `requested`
+  - `requested_at`: DATETIME, NOT NULL, DEFAULT CURRENT_TIMESTAMP
+  - `decided_at`: DATETIME, NULL, DEFAULT NULL (set on accept)
+  - `decided_by`: BIGINT UNSIGNED, NULL, DEFAULT NULL (admin who accepted; the owner)
+  - `courier_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL (entered at accept only when the order was already shipped)
+  - `courier_name`: VARCHAR(100), NULL, DEFAULT NULL (snapshot of `couriers.name` at accept)
+  - `tracking_id`: VARCHAR(100), NULL, DEFAULT NULL (entered at accept when already shipped)
+  - `restocked_at`: DATETIME, NULL, DEFAULT NULL (Restock tick; may be set later than accept)
+  - `undo_until`: DATETIME, NULL, DEFAULT NULL (`decided_at + 10 minutes`)
+  - `undone_at`: DATETIME, NULL, DEFAULT NULL (stamped when the accept is undone; row kept)
+  - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
+  - `updated_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+- **Primary Key**: `id`
+- **Foreign Keys**:
+  - `fk_cancellation_requests_order`: `order_id` REFERENCES `orders(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_cancellation_requests_decided_by`: `decided_by` REFERENCES `admin_users(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_cancellation_requests_courier`: `courier_id` REFERENCES `couriers(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+- **Unique Constraints**: None. A customer may request again after an accept is undone or after an earlier request was left pending.
+- **Indexes**: `idx_cancellation_requests_order` (`order_id`, `requested_at`) — one order's cancellation history; `idx_cancellation_requests_status_requested` (`status`, `requested_at`) — the Cancellations list; `idx_cancellation_requests_decided_by` and `idx_cancellation_requests_courier` — FK lookups; `idx_cancellation_requests_undo_until` (`undo_until`) — finding live undo windows.
+- **Enum Values**: `status`: `requested`, `accepted`.
+- **App checks**: `decided_at` and `decided_by` are set together; `courier_id`/`courier_name` and `tracking_id` are set together; `restocked_at` is only set after accept; the refund amount follows the tracking rule.
+
+#### 36. `return_reject_reasons`
+
+- **Purpose**: The managed dropdown used when the owner rejects a return or exchange. Hidden rows stay in history; rows are never deleted.
+- **Columns**:
+  - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
+  - `label`: VARCHAR(150), NOT NULL
+  - `is_active`: TINYINT(1), NOT NULL, DEFAULT 1 (`0` = hidden from the dropdown)
+  - `display_order`: INT UNSIGNED, NOT NULL, DEFAULT 0
+  - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
+  - `updated_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+- **Primary Key**: `id`
+- **Foreign Keys**: None.
+- **Unique Constraints**: `uq_return_reject_reasons_label` (`label`) — no duplicate labels.
+- **Indexes**: `idx_return_reject_reasons_active_order` (`is_active`, `display_order`) — the dropdown query.
+- **Enum Values**: None.
+- **Seed values**: Item used, washed or altered; Tags or original packaging missing; Product not eligible for return; Reason not covered by the return policy; Item received does not match the returned order; Other.
+
+#### 37. `return_requests`
+
+- **Purpose**: One row per order's return or exchange request, its decision, the two reversible ticks, and the return refund or exchange shipment fields.
+- **Columns**:
+  - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
+  - `order_id`: BIGINT UNSIGNED, NOT NULL
+  - `type`: ENUM, NOT NULL
+  - `status`: ENUM, NOT NULL, DEFAULT `requested`
+  - `reason`: VARCHAR(255), NOT NULL (customer reason from the request form)
+  - `note`: TEXT, NULL, DEFAULT NULL (optional customer note)
+  - `requested_at`: DATETIME, NOT NULL, DEFAULT CURRENT_TIMESTAMP
+  - `decided_at`: DATETIME, NULL, DEFAULT NULL
+  - `decided_by`: BIGINT UNSIGNED, NULL, DEFAULT NULL
+  - `reject_reason_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL (required when rejected; from the managed list)
+  - `reject_note`: VARCHAR(255), NULL, DEFAULT NULL
+  - `undo_until`: DATETIME, NULL, DEFAULT NULL (`decided_at + 10 minutes`)
+  - `undone_at`: DATETIME, NULL, DEFAULT NULL (stamped when the decision is undone; row kept)
+  - `received_at`: DATETIME, NULL, DEFAULT NULL (Item received tick; reversible)
+  - `restocked_at`: DATETIME, NULL, DEFAULT NULL (Restock tick; only after `received_at`, reversible)
+  - `refund_amount_paise`: BIGINT UNSIGNED, NULL, DEFAULT NULL (editable before refunding; NULL for exchanges)
+  - `refund_includes_shipping`: TINYINT(1), NOT NULL, DEFAULT 0 (1 only when we sent a wrong or damaged item)
+  - `courier_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL (replacement courier for an exchange)
+  - `courier_name`: VARCHAR(100), NULL, DEFAULT NULL (snapshot for an exchange)
+  - `tracking_id`: VARCHAR(100), NULL, DEFAULT NULL (replacement tracking for an exchange)
+  - `shipped_at`: DATETIME, NULL, DEFAULT NULL (replacement shipped at; exchange only)
+  - `extra_payment_note`: VARCHAR(255), NULL, DEFAULT NULL (optional note such as "extra Rs collected")
+  - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
+  - `updated_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+- **Primary Key**: `id`
+- **Foreign Keys**:
+  - `fk_return_requests_order`: `order_id` REFERENCES `orders(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_return_requests_decided_by`: `decided_by` REFERENCES `admin_users(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_return_requests_reject_reason`: `reject_reason_id` REFERENCES `return_reject_reasons(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_return_requests_courier`: `courier_id` REFERENCES `couriers(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+- **Unique Constraints**: `uq_return_requests_order` (`order_id`) — one return or exchange request per order, forever.
+- **Indexes**: `idx_return_requests_status_requested` (`status`, `requested_at`) — Returns list; `idx_return_requests_decided_by`, `idx_return_requests_reject_reason` and `idx_return_requests_courier` — FK lookups; `idx_return_requests_undo_until` (`undo_until`) — live undo windows.
+- **Enum Values**:
+  - `type`: `return`, `exchange`.
+  - `status`: `requested`, `accepted`, `rejected`, `received`, `completed`.
+- **App checks**: `reject_reason_id` is set only when rejected; `refund_amount_paise` is set only for returns; an exchange must have a replacement variant on every item; `received_at`/`restocked_at` are not set before `accepted`; `completed` is set by the application after the finishing condition.
+
+#### 38. `return_request_items`
+
+- **Purpose**: The selected lines of one return or exchange request, with the quantity coming back and the replacement variant for an exchange.
+- **Columns**:
+  - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
+  - `return_request_id`: BIGINT UNSIGNED, NOT NULL
+  - `order_item_id`: BIGINT UNSIGNED, NOT NULL
+  - `quantity`: INT UNSIGNED, NOT NULL
+  - `replacement_variant_size_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL (exchange only; same product, different size/colour, or same variant if damaged)
+  - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
+- **Primary Key**: `id`
+- **Foreign Keys**:
+  - `fk_return_request_items_request`: `return_request_id` REFERENCES `return_requests(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_return_request_items_order_item`: `order_item_id` REFERENCES `order_items(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+  - `fk_return_request_items_replacement`: `replacement_variant_size_id` REFERENCES `product_variant_sizes(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+- **Unique Constraints**: `uq_return_request_items_request_item` (`return_request_id`, `order_item_id`) — one row per selected order line.
+- **Indexes**: `idx_return_request_items_order_item` (`order_item_id`) — an order line's return history and FK; `idx_return_request_items_replacement` (`replacement_variant_size_id`) — FK and replacement stock lookup.
+- **CHECK constraints**: `chk_return_request_items_quantity` (`quantity > 0`).
+- **Enum Values**: None.
+- **App checks**: `quantity` must not exceed the matching `order_items.quantity`; for an exchange the replacement's `product_id` must equal the ordered product's `product_id`.
+
+#### 39. `notifications`
+
+- **Purpose**: The single durable queue and log for customer and owner emails: what to send, to whom, when, whether it was sent, and whether Undo cancelled it. OTP and password-reset emails are never stored here.
+- **Columns**:
+  - `id`: BIGINT UNSIGNED, NOT NULL, AUTO_INCREMENT
+  - `channel`: ENUM, NOT NULL, DEFAULT `email`
+  - `recipient_type`: ENUM, NOT NULL
+  - `recipient_email`: VARCHAR(255), NOT NULL
+  - `template_key`: ENUM, NOT NULL
+  - `order_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL
+  - `related_type`: VARCHAR(32), NULL, DEFAULT NULL (for example `cancellation_request` or `return_request`)
+  - `related_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL (loose link; the type selects the table)
+  - `payload`: TEXT, NULL, DEFAULT NULL (JSON of non-sensitive template values only)
+  - `send_after`: DATETIME, NOT NULL, DEFAULT CURRENT_TIMESTAMP (delayed sends wait for this IST instant)
+  - `sent_at`: DATETIME, NULL, DEFAULT NULL
+  - `cancelled_at`: DATETIME, NULL, DEFAULT NULL (set by Undo; a cancelled row is never sent)
+  - `attempts`: TINYINT UNSIGNED, NOT NULL, DEFAULT 0
+  - `last_error`: VARCHAR(255), NULL, DEFAULT NULL
+  - `created_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP
+  - `updated_at`: TIMESTAMP, NOT NULL, DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+- **Primary Key**: `id`
+- **Foreign Keys**:
+  - `fk_notifications_order`: `order_id` REFERENCES `orders(id)` ON DELETE RESTRICT ON UPDATE CASCADE
+- **Unique Constraints**: None. A repeated event is prevented by the order/request status guards, not by a unique email key.
+- **Indexes**: `idx_notifications_send` (`sent_at`, `cancelled_at`, `send_after`) — the sending job; `idx_notifications_created_at` (`created_at`) — 90-day cleanup; `idx_notifications_order_id` (`order_id`) — one order's messages and FK; `idx_notifications_related` (`related_type`, `related_id`) — request-specific messages.
+- **Enum Values**:
+  - `channel`: `email`, `whatsapp`.
+  - `recipient_type`: `customer`, `owner`.
+  - `template_key`: `order_received`, `order_shipped`, `order_rejected`, `cancellation_accepted`, `return_accepted`, `return_rejected`, `refund_done`, `payment_unfulfilled`, `owner_new_order`, `owner_cancellation_request`, `owner_return_request`.
+- **Retention**: sent or cancelled rows older than 90 days are deleted by the cleanup job. Rows still waiting to send are never deleted by it.
+
+### Changes to the earlier tables
+
+#### `refunds` (B2a pointers become real)
+
+`refunds.cancellation_request_id` and `refunds.return_request_id` stop being loose columns:
+
+- **FKs added**: `fk_refunds_cancellation_request` and `fk_refunds_return_request`, both `ON DELETE RESTRICT ON UPDATE CASCADE`.
+- **Indexes added**: `idx_refunds_cancellation_request_id` and `idx_refunds_return_request_id`.
+- The columns stay `NULL` for rejects, unfulfilled payments and other refunds. A refund created by an accepted cancellation or return always points at its request, so the money and the request can never drift apart.
+
+#### `stock_movements` (request traceability)
+
+Two nullable request columns are added:
+
+- `cancellation_request_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL — a cancellation restock or its reversal.
+- `return_request_id`: BIGINT UNSIGNED, NULL, DEFAULT NULL — a return restock or an exchange replacement movement.
+- **FKs added**: `fk_stock_movements_cancellation_request` and `fk_stock_movements_return_request`, both `ON DELETE RESTRICT ON UPDATE CASCADE`.
+- **Indexes added**: `idx_stock_movements_cancellation_request_id` and `idx_stock_movements_return_request_id`.
+- Both stay `NULL` for ordinary sales, stock arrivals and audit corrections. The existing `order_id` stays for the sale that caused the movement.
+
+These foreign keys are declared ahead of the B2b tables in `db/schema_draft.sql`; the draft runs with `FOREIGN_KEY_CHECKS = 0`, exactly as earlier parts do.
+
+### Design rules
+
+1. **Cancellation is accepted, never automatic**: a customer request changes nothing until the owner accepts it. The order can be accepted before shipping (full refund including shipping) or after shipping (product price only, with tracking entered at accept). Both paths set `cancelled`, `cancel_reason = 'customer_request'`, release the coupon and write one pending `cancellation` refund.
+2. **Tracking decides the cancellation refund**: with no tracking ID, the refund is `orders.total_paise` and `includes_shipping = 1`; with a tracking ID, it is `orders.total_paise - orders.shipping_paise` and `includes_shipping = 0`. The order is cancelled either way.
+3. **Cancellation undo is the same 10-minute contract as Reject**: `undo_until = decided_at + 10 minutes`; Undo is allowed only while the refund is pending. It restores the previous order status, stamps `undone_at`, deletes the refund row, reverses the coupon release, cancels the queued email and reverses any restock with a guarded decrement. A done refund blocks Undo.
+4. **Restock ticks are idempotent and traceable**: `restocked_at` is set once; a second tick does nothing. Every restock writes a `stock_movements` row with the matching `cancellation_request_id` or `return_request_id`. Undo writes a reversal movement and never deletes history. A cancellation restock may happen long after accept; it is independent of the 10-minute window.
+5. **One return or exchange request per order**: `return_requests.order_id` is unique, forever. The customer selects lines and quantities; `quantity` never exceeds the ordered quantity, checked in the application. A product with `return_eligible = 0` cannot be selected.
+6. **A return decision is reversible for 10 minutes**: accept and reject both stamp `decided_at`, `decided_by` and `undo_until`, and both queue the customer email for `undo_until`. Undo returns the request to `requested`, stamps `undone_at`, deletes the still-pending refund (accept only), reverses the coupon release if it happened, and cancels the queued email. A done refund blocks Undo.
+7. **Return refunds are product price only unless we were at fault**: `refund_amount_paise` is editable before refunding so a coupon split can be handled by hand. `refund_includes_shipping = 1` only for a wrong or damaged item. The refund row uses `kind = 'return'` and points at the request.
+8. **Coupon release on a return is driven by the full money-back test**: when an order's refunds add up to `orders.total_paise`, release the coupon use in the same transaction. Partial refunds keep the redemption. The B2a rule that refunds never exceed the captured amount still applies to every return refund.
+9. **The return ladder is enforced in the application**: `requested` → `accepted` or `rejected`; `accepted` → `received` → `completed` for a return, and `completed` for an exchange when the replacement is shipped and the old item is received. Item received and Restock are separate reversible ticks; Restock is only available after Item received, and Item received cannot be undone while `restocked_at` is set.
+10. **Exchange stock moves only on shipment save**: the replacement is taken from stock with the guarded decrement and a `stock_movements` row only when the owner saves the replacement courier and tracking. The replacement must be the same product, in a different size or colour, or the same variant when damaged. A failed guard refuses the save. Any price difference is paid outside the app and only `extra_payment_note` records it.
+11. **Notifications are durable and idempotent at the row level**: one row per intended email, `send_after` for delays, `sent_at` for success, `cancelled_at` for Undo, `attempts` and `last_error` for retries. The sending job must claim a row before sending and mark it sent afterwards; Undo always cancels the queued row rather than editing the email.
+12. **OTP and password-reset email is never queued here**: those messages carry secrets and are sent immediately. `notifications` holds only order, cancellation, return, exchange and refund messages with non-sensitive payloads.
+13. **Request rows are never hard-deleted**: `cancellation_requests`, `return_requests` and `return_request_items` are audit rows. Undo uses `undone_at`; it does not delete the request. All incoming foreign keys are `RESTRICT`.
+14. **All B2b times are IST**: request windows, `decided_at`, `received_at`, `restocked_at`, `shipped_at` and `send_after` follow the same IST rule as the rest of the schema.
+
+### Relationship Summary
+
+This continues items 1-27 of the Part A, Part B1 and Part B2a summaries.
+
+28. **Orders and Cancellation Requests**: `orders` `1 : N` `cancellation_requests`, `ON DELETE RESTRICT`. A request may be accepted after the order has shipped; the ordering row keeps the tracking and refund decision.
+29. **Orders and Return Requests**: `orders` `1 : 1` `return_requests` (enforced by the unique `order_id`), `ON DELETE RESTRICT`. One return or exchange per order, ever.
+30. **Return Requests and Items**: `return_requests` `1 : N` `return_request_items`, `ON DELETE RESTRICT`; each item also points at one `order_items` row and, for an exchange, one replacement `product_variant_sizes` row.
+31. **Reject Reasons and Returns**: `return_reject_reasons` `1 : N` `return_requests` via `reject_reason_id`, `ON DELETE RESTRICT`. Hidden reasons remain readable on old requests.
+32. **Refunds and Requests**: `cancellation_requests` `1 : N` `refunds` and `return_requests` `1 : N` `refunds`, both `ON DELETE RESTRICT`. This replaces the loose B2a pointers.
+33. **Stock Movements and Requests**: `cancellation_requests` `1 : N` `stock_movements` and `return_requests` `1 : N` `stock_movements`, both `ON DELETE RESTRICT`, so a restock or replacement always names its request.
+34. **Notifications and Orders**: `orders` `1 : N` `notifications` via `order_id`, `ON DELETE RESTRICT`; `related_type`/`related_id` are a loose polymorphic link to the cancellation or return request.
+35. **Settings and the Return Window**: `settings.return_window_days` supplies the window length; the window itself is computed from `orders.delivered_at`, so no extra table is needed.
+
+### Questions
+
+1. **Can the owner decline a cancellation request?** — **Decided: no separate decline state.** `cancellation_requests.status` is only `requested` or `accepted`; a request is accepted (possibly after shipping, with tracking) or left pending. If declining becomes a real need, add a `rejected` status and a reason column in a later part.
+2. **When is an exchange `completed`?** — **Decided: when the replacement has shipped and the old item is received.** That is `shipped_at IS NOT NULL AND received_at IS NOT NULL`; the application sets `completed`. A return is `completed` when its refund is marked done.
+3. **Is the return-window boundary inclusive?** — **Decided: yes, through 23:59:59 IST on `delivered_at` date + `return_window_days`.** A request created after that instant is refused. The boundary is evaluated in IST, like every other time in the schema.
+4. **How is the default return refund split when a coupon was used?** — **Open, recommendation: pre-fill the selected lines' paid value and let the owner edit it before refunding.** The order-level discount cannot be split perfectly per line, so the application should suggest a proportional share, show the captured total, and enforce the B2a cap. The owner's edited amount is what is stored.
+5. **What recipient field does WhatsApp use?** — **Open, recommendation: keep `channel = 'email'` until the provider is chosen.** The table stores `recipient_email` only; a WhatsApp implementation will need a recipient phone or provider address, added when that feature leaves scope B.
+6. **Can a customer create more than one cancellation request?** — **Decided: yes, no unique key on `cancellation_requests.order_id`.** An undone accept reopens the order and the customer may request again; only the newest open request is actionable.
+
+### Risks
+
+- **Cancellation or return Undo racing a manual refund**: the owner could refund in Razorpay and tick Refund done inside the 10-minute window. Undo must refuse when the refund row is already `done`; otherwise the request is reversed while the money is gone.
+- **Notification delivery is at-least-once**: a crash after the provider accepts an email but before `sent_at` is written causes a retry and a duplicate email. `attempts` and `last_error` make this visible, but there is no provider message ID yet. The job must be restart-safe and must not send a row whose `cancelled_at` is set.
+- **Delayed emails depend on the queue**: if the job stops, rejected, cancellation and return emails never arrive even though the refund is pending. Alert on the age of the oldest due unsent row, not just on job liveness.
+- **One request per order is a hard stop**: a customer who submits a return for one line cannot add another line later without the owner intervening. The storefront must make the selection clear before submitting, because the unique key will reject a second request.
+- **Restock and exchange stock can be double-counted**: ticking Restock and later undoing it, or saving an exchange replacement twice, must use the guarded decrement and set the timestamp once. Without that, quantity drifts and the movement log disagrees with the variant row.
+- **Exchange price differences live outside the app**: `extra_payment_note` records "extra Rs collected", but there is no payment row, no reconciliation and no automatic check that the money was collected. The owner must treat it as a manual note.
+- **A cancellation accepted after shipping may have incomplete tracking**: the courier and tracking fields are optional on accept, so the "already shipped" variant can still refund product price only without giving the customer a tracking number. The form should require both when the product-price-only path is chosen.
+- **Return-window boundaries are time-sensitive**: a request at 23:59:59 IST on the last day is valid, one second later is not. Store `delivered_at` as the IST date at `00:00:00` and compare against the end of the computed day, not a UTC timestamp.
+- **Refund totals can still be entered wrongly**: `refund_amount_paise` is editable, so the B2a cap check (sum of refunds never above the captured amount) must run on every edit and every new refund row, not only on the first accept.
+- **`related_id` is polymorphic**: it cannot be a foreign key. The application must delete or ignore nothing here because requests are never deleted, but a bad `related_type` would make the link meaningless; validate it against the fixed set.
+- **Notification payload privacy**: the JSON payload is convenient and easy to overfill. It must be built from a fixed template allow-list, never by dumping an order, customer or webhook object.
+- **WhatsApp is only a schema value**: the channel exists but has no recipient phone column or provider integration. Enabling it without a migration would send nothing or send to an email field, so it must stay unused until the provider decision.
 
