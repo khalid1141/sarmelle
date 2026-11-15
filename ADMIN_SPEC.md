@@ -12,6 +12,7 @@ Business: a small home business registered under an individual. **No GST.** Invo
 - Critical actions (reject, cancel, delete, refund done) use a confirmation popup.
 - Content and stock live in MySQL and change instantly with no rebuild.
 - Past orders keep their own copy (snapshot) of product name, variant, price and address, so history survives product edits and deletes.
+- All times are IST (Asia/Kolkata, +05:30), not UTC: screens, emails, reports, delivered dates, return windows and holds.
 
 ## 2. Login and security
 - Password only, at least 12 characters, strong hashing.
@@ -25,6 +26,7 @@ Business: a small home business registered under an individual. **No GST.** Invo
 - Labels: this month's orders, this month's sales.
 - Table grouped by product. Each row opens a dropdown with colour and size and quantity, editable (for retail sales), with a reason field. Stock history is kept (who, when, old, new, reason).
 - No low-stock alerts. No separate "reserved" column; only available stock is shown.
+- The Inventory screen shows a **"Checkout in progress"** badge with the product name and held units next to every product that has unexpired stock holds; it refreshes every 30 seconds. An admin stock edit below the held units shows a warning but is allowed.
 
 ## 4. Products
 - Statuses: **Draft, Published, Unpublished, Archived, Deleted.**
