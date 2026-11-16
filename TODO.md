@@ -1,5 +1,7 @@
 # Sarmelle E-Commerce Platform — Project Roadmap & TODO
 
+> **Naming note:** the backend foundation is now called **Milestone 4** (see `docs/MILESTONE4_DESIGN.md`); the headings below are not renumbered.
+
 ## Architecture Decisions (Option B Confirmed)
 - **Frontend & Build:** React 19 + TypeScript + Vite 8 + Tailwind CSS v4 built to static files (`dist/`).
 - **Backend:** PHP 8.2+ REST API endpoints under `/api/` with PDO prepared statements and MySQL database (`sarmelle_db`).
