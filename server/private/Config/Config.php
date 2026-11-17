@@ -1,0 +1,412 @@
+<?php
+declare(strict_types=1);
+
+namespace Sarmelle\Config;
+
+/**
+ * Typed configuration for one deployment.
+ *
+ * Values come from server/private/config/.env, which is never committed.
+ * Process environment variables are deliberately not merged, so web and CLI
+ * cannot disagree about the same deployment.
+ */
+final class Config
+{
+    public const TIMEZONE = 'Asia/Kolkata';
+    public const TIMEZONE_OFFSET = '+05:30';
+
+    /**
+     * Keys with no safe default. Secrets in particular are never defaulted.
+     */
+    private const REQUIRED = [
+        'APP_ENV',
+        'APP_DEBUG',
+        'APP_URL',
+        'ADMIN_URL',
+        'APP_KEY',
+        'APP_TIMEZONE',
+        'DB_HOST',
+        'DB_PORT',
+        'DB_NAME',
+        'DB_USER',
+        'DB_PASSWORD',
+        'DB_CHARSET',
+        'DB_TIMEZONE',
+    ];
+
+    /**
+     * Non-secret keys with the design's documented defaults.
+     */
+    private const DEFAULTS = [
+        'APP_TRUSTED_PROXIES' => '',
+        'DB_SSL' => '0',
+        'DB_SSL_CA' => '',
+        'SESSION_NAME_CUSTOMER' => 'SARM_SESS',
+        'SESSION_LIFETIME_CUSTOMER_DAYS' => '30',
+        'SESSION_SAVE_PATH' => 'server/private/var/sessions',
+        'ADMIN_SESSION_COOKIE' => 'SARM_ADMIN_SESSION',
+        'ADMIN_DEVICE_COOKIE' => 'SARM_ADMIN_DEVICE',
+        'ADMIN_PENDING_COOKIE' => 'SARM_ADMIN_PENDING',
+        'ADMIN_CSRF_COOKIE' => 'SARM_ADMIN_CSRF',
+        'ADMIN_SESSION_IDLE_MINUTES' => '30',
+        'ADMIN_SESSION_ABSOLUTE_HOURS' => '12',
+        'ADMIN_TRUSTED_DEVICE_DAYS' => '30',
+        'COOKIE_SECURE' => '0',
+        'COOKIE_SAMESITE' => 'Lax',
+        'PASSWORD_ALGO' => 'auto',
+        'PASSWORD_BCRYPT_COST' => '12',
+        'MAIL_TRANSPORT' => 'log',
+        'MAIL_HOST' => '',
+        'MAIL_PORT' => '465',
+        'MAIL_USERNAME' => '',
+        'MAIL_PASSWORD' => '',
+        'MAIL_ENCRYPTION' => 'ssl',
+        'MAIL_FROM_ADDRESS' => '',
+        'MAIL_FROM_NAME' => 'Sarmelle',
+        'MAIL_REPLY_TO' => '',
+        'MAIL_LOG_DIR' => 'server/private/var/mail',
+        'MAIL_TIMEOUT_SECONDS' => '10',
+        'MAX_JSON_BYTES' => '65536',
+        'LOG_DIR' => 'server/private/var/log',
+        'LOG_LEVEL' => 'warning',
+        'SETUP_ALLOWED' => '0',
+        'RECOVERY_ALLOWED' => '0',
+        'RAZORPAY_KEY_ID' => '',
+        'RAZORPAY_KEY_SECRET' => '',
+        'RAZORPAY_WEBHOOK_SECRET' => '',
+    ];
+
+    /**
+     * @param array<string, string> $values
+     */
+    private function __construct(
+        private readonly array $values,
+        private readonly string $privateRoot
+    ) {
+    }
+
+    public static function load(string $privateRoot): self
+    {
+        $root = self::normalisePath($privateRoot);
+        $envPath = self::normalisePath($root . '/config/.env');
+
+        self::assertSafeEnvPath($envPath, $root);
+
+        if (!is_file($envPath)) {
+            throw new \RuntimeException(
+                'Configuration file is missing. Copy .env.example to server/private/config/.env.'
+            );
+        }
+
+        $contents = @file_get_contents($envPath);
+
+        if (!is_string($contents)) {
+            throw new \RuntimeException('Configuration file could not be read.');
+        }
+
+        return self::fromArray(Env::parse($contents), $root);
+    }
+
+    /**
+     * @param array<string, mixed> $values
+     */
+    public static function fromArray(array $values, string $privateRoot = ''): self
+    {
+        foreach (self::REQUIRED as $key) {
+            if (!array_key_exists($key, $values) || trim((string) $values[$key]) === '') {
+                throw new \RuntimeException('Missing required configuration key: ' . $key);
+            }
+        }
+
+        $merged = self::DEFAULTS;
+
+        foreach ($values as $key => $value) {
+            if (!is_string($key) || !is_scalar($value)) {
+                continue;
+            }
+
+            if (array_key_exists($key, self::DEFAULTS) || in_array($key, self::REQUIRED, true)) {
+                $merged[$key] = (string) $value;
+            }
+        }
+
+        $config = new self($merged, self::normalisePath($privateRoot));
+        $config->validate();
+
+        return $config;
+    }
+
+    /**
+     * Public so server/bin/selftest.php can prove the web-root refusal without
+     * touching a real file. Never call it from request code.
+     */
+    public static function assertSafeEnvPath(string $envPath, string $privateRoot): void
+    {
+        $envPath = self::normalisePath($envPath);
+        $root = self::normalisePath($privateRoot);
+
+        $webRoots = [
+            self::normalisePath($root . '/../web-storefront'),
+            self::normalisePath($root . '/../web-admin'),
+        ];
+
+        foreach ($webRoots as $webRoot) {
+            if (self::isWithin($envPath, $webRoot)) {
+                throw new \RuntimeException('Refusing to load .env from inside a web root.');
+            }
+        }
+
+        if (!self::isWithin($envPath, $root)) {
+            throw new \RuntimeException('Refusing to load .env outside the private tree.');
+        }
+    }
+
+    public function env(): string
+    {
+        return $this->string('APP_ENV');
+    }
+
+    public function isLocal(): bool
+    {
+        return $this->env() === 'local';
+    }
+
+    public function isProduction(): bool
+    {
+        return $this->env() === 'production';
+    }
+
+    public function debug(): bool
+    {
+        return $this->bool('APP_DEBUG');
+    }
+
+    public function appUrl(): string
+    {
+        return $this->string('APP_URL');
+    }
+
+    public function adminUrl(): string
+    {
+        return $this->string('ADMIN_URL');
+    }
+
+    public function appKey(): string
+    {
+        return $this->string('APP_KEY');
+    }
+
+    public function timezone(): string
+    {
+        return $this->string('APP_TIMEZONE');
+    }
+
+    public function privateRoot(): string
+    {
+        return $this->privateRoot;
+    }
+
+    public function string(string $key): string
+    {
+        if (!array_key_exists($key, $this->values)) {
+            throw new \InvalidArgumentException('Unknown configuration key: ' . $key);
+        }
+
+        return $this->values[$key];
+    }
+
+    public function int(string $key): int
+    {
+        $value = $this->string($key);
+
+        if (preg_match('/^\d+$/', $value) !== 1) {
+            throw new \RuntimeException('Configuration key ' . $key . ' must be an integer.');
+        }
+
+        return (int) $value;
+    }
+
+    public function bool(string $key): bool
+    {
+        return self::toBool($this->string($key), $key);
+    }
+
+    private function validate(): void
+    {
+        if (!in_array($this->env(), ['local', 'staging', 'production'], true)) {
+            throw new \RuntimeException('APP_ENV must be local, staging or production.');
+        }
+
+        $this->bool('APP_DEBUG');
+
+        if ($this->isProduction() && $this->debug()) {
+            throw new \RuntimeException('Refusing to start: APP_DEBUG must be 0 when APP_ENV=production.');
+        }
+
+        if ($this->timezone() !== self::TIMEZONE) {
+            throw new \RuntimeException('APP_TIMEZONE must be ' . self::TIMEZONE . '.');
+        }
+
+        $this->assertAppKey();
+        $this->assertUrl('APP_URL');
+        $this->assertUrl('ADMIN_URL');
+
+        if (preg_match('/^[A-Za-z0-9._:-]+$/', $this->string('DB_HOST')) !== 1) {
+            throw new \RuntimeException('DB_HOST contains unsupported characters.');
+        }
+
+        if (preg_match('/^[A-Za-z0-9_]+$/', $this->string('DB_NAME')) !== 1) {
+            throw new \RuntimeException('DB_NAME must contain only letters, digits and underscores.');
+        }
+
+        $this->assertIntRange('DB_PORT', 1, 65535);
+
+        if ($this->string('DB_CHARSET') !== 'utf8mb4') {
+            throw new \RuntimeException('DB_CHARSET must be utf8mb4.');
+        }
+
+        if ($this->string('DB_TIMEZONE') !== self::TIMEZONE_OFFSET) {
+            throw new \RuntimeException('DB_TIMEZONE must be ' . self::TIMEZONE_OFFSET . '.');
+        }
+
+        $this->bool('DB_SSL');
+        $this->string('DB_SSL_CA');
+
+        $this->assertIntRange('SESSION_LIFETIME_CUSTOMER_DAYS', 1, 3650);
+        $this->assertIntRange('ADMIN_SESSION_IDLE_MINUTES', 1, 1440);
+        $this->assertIntRange('ADMIN_SESSION_ABSOLUTE_HOURS', 1, 720);
+        $this->assertIntRange('ADMIN_TRUSTED_DEVICE_DAYS', 1, 365);
+        $this->assertIntRange('PASSWORD_BCRYPT_COST', 4, 31);
+        $this->assertIntRange('MAIL_PORT', 1, 65535);
+        $this->assertIntRange('MAIL_TIMEOUT_SECONDS', 1, 120);
+        $this->assertIntRange('MAX_JSON_BYTES', 1024, 1048576);
+
+        foreach (['COOKIE_SECURE', 'SETUP_ALLOWED', 'RECOVERY_ALLOWED'] as $booleanKey) {
+            $this->bool($booleanKey);
+        }
+
+        if (!in_array($this->string('COOKIE_SAMESITE'), ['Lax', 'Strict', 'None'], true)) {
+            throw new \RuntimeException('COOKIE_SAMESITE must be Lax, Strict or None.');
+        }
+
+        if (!in_array($this->string('PASSWORD_ALGO'), ['auto', 'argon2id', 'bcrypt'], true)) {
+            throw new \RuntimeException('PASSWORD_ALGO must be auto, argon2id or bcrypt.');
+        }
+
+        if (!in_array($this->string('LOG_LEVEL'), ['debug', 'info', 'warning', 'error', 'critical'], true)) {
+            throw new \RuntimeException('LOG_LEVEL is not recognised.');
+        }
+
+        $this->validateMail();
+    }
+
+    private function validateMail(): void
+    {
+        $transport = $this->string('MAIL_TRANSPORT');
+
+        if (!in_array($transport, ['log', 'smtp'], true)) {
+            throw new \RuntimeException('MAIL_TRANSPORT must be log or smtp.');
+        }
+
+        if ($transport !== 'smtp') {
+            return;
+        }
+
+        foreach (['MAIL_HOST', 'MAIL_USERNAME', 'MAIL_PASSWORD', 'MAIL_FROM_ADDRESS'] as $key) {
+            if (trim($this->string($key)) === '') {
+                throw new \RuntimeException('Missing required configuration key: ' . $key);
+            }
+        }
+
+        if (!in_array($this->string('MAIL_ENCRYPTION'), ['ssl', 'tls', 'none'], true)) {
+            throw new \RuntimeException('MAIL_ENCRYPTION must be ssl, tls or none.');
+        }
+
+        if (filter_var($this->string('MAIL_FROM_ADDRESS'), FILTER_VALIDATE_EMAIL) === false) {
+            throw new \RuntimeException('MAIL_FROM_ADDRESS must be a valid email address.');
+        }
+    }
+
+    private function assertAppKey(): void
+    {
+        $decoded = base64_decode($this->string('APP_KEY'), true);
+
+        if ($decoded === false || strlen($decoded) !== 32) {
+            throw new \RuntimeException('APP_KEY must be base64 encoding of exactly 32 bytes.');
+        }
+    }
+
+    private function assertUrl(string $key): void
+    {
+        $parts = parse_url($this->string($key));
+        $scheme = is_array($parts) ? strtolower((string) ($parts['scheme'] ?? '')) : '';
+        $host = is_array($parts) ? (string) ($parts['host'] ?? '') : '';
+
+        if (!in_array($scheme, ['http', 'https'], true) || $host === '') {
+            throw new \RuntimeException($key . ' must be an absolute http(s) URL.');
+        }
+    }
+
+    private function assertIntRange(string $key, int $minimum, int $maximum): void
+    {
+        $value = $this->int($key);
+
+        if ($value < $minimum || $value > $maximum) {
+            throw new \RuntimeException($key . ' is out of range.');
+        }
+    }
+
+    private static function toBool(string $value, string $key): bool
+    {
+        return match (strtolower($value)) {
+            '1', 'true', 'yes', 'on' => true,
+            '0', 'false', 'no', 'off' => false,
+            default => throw new \RuntimeException('Configuration key ' . $key . ' must be a boolean.'),
+        };
+    }
+
+    private static function normalisePath(string $path): string
+    {
+        $path = str_replace('\\', '/', $path);
+        $path = preg_replace('#/+#', '/', $path) ?? $path;
+
+        $prefix = '';
+
+        if (preg_match('#^[A-Za-z]:/#', $path) === 1) {
+            $prefix = substr($path, 0, 2);
+            $path = substr($path, 2);
+        }
+
+        $absolute = str_starts_with($path, '/');
+        $parts = [];
+
+        foreach (explode('/', $path) as $part) {
+            if ($part === '' || $part === '.') {
+                continue;
+            }
+
+            if ($part === '..') {
+                array_pop($parts);
+                continue;
+            }
+
+            $parts[] = $part;
+        }
+
+        $normalised = implode('/', $parts);
+
+        if ($prefix !== '') {
+            return $prefix . '/' . $normalised;
+        }
+
+        return ($absolute ? '/' : '') . $normalised;
+    }
+
+    private static function isWithin(string $path, string $root): bool
+    {
+        $path = strtolower(rtrim($path, '/'));
+        $root = strtolower(rtrim($root, '/'));
+
+        return $path === $root || str_starts_with($path, $root . '/');
+    }
+}

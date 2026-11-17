@@ -6,3 +6,12 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# PHP backend (slice 1)
+/server/private/config/.env
+/server/private/config/.env.*
+server/web-storefront/bootstrap-path.php
+server/web-admin/bootstrap-path.php
+server/private/var/*
+!server/private/var/.gitignore
+*.eml
