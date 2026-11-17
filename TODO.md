@@ -69,6 +69,8 @@
 - [ ] Sales reports, revenue dashboards, stock movement reports, and CSV/PDF data exports.
 - [ ] Email & WhatsApp Business integration (adapters).
 - [ ] SEO metadata management, sitemaps, and Google Analytics / Search Console hooks.
+- [ ] Festive banner text: editable banner/campaign text without a rebuild.
+- [ ] `ADMIN_SPEC.md` v3 is the source of truth for admin screens and replaces the rough admin map.
 
 ## Milestone 6 — Quality, Security & Claude Review
 - [ ] Functional, responsive, accessibility, and concurrency testing.
@@ -84,3 +86,4 @@
 - [ ] Optional: fake "waiting for payment approval" screen to mirror the real UPI flow.
 - [ ] Production DNS configuration at GoDaddy & Hostinger.
 - [ ] SSL certificate verification, final security smoke tests, and live deployment.
+- [ ] Payment countdown must start when the customer clicks Pay, and must read the server's `payment_hold_minutes` setting.

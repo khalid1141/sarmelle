@@ -6,6 +6,8 @@ import {
 import type { CartItem } from '../../types/cart';
 import type { UserOrder } from '../../types/order';
 
+const PAYMENT_WINDOW_SECONDS = 5 * 60;
+
 interface CheckoutModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -29,7 +31,7 @@ export default function CheckoutModal({
 }: CheckoutModalProps) {
   const [checkoutStep, setCheckoutStep] = useState<1 | 2 | 3 | 4>(1);
   const [shippingMethod, setShippingMethod] = useState<'standard' | 'express'>('standard');
-  const [paymentSecondsLeft, setPaymentSecondsLeft] = useState<number>(480);
+  const [paymentSecondsLeft, setPaymentSecondsLeft] = useState<number>(PAYMENT_WINDOW_SECONDS);
 
   const [deliveryAddress, setDeliveryAddress] = useState({
     fullName: 'Pooja Sharma',
@@ -55,14 +57,14 @@ export default function CheckoutModal({
   useLayoutEffect(() => {
     if (isOpen) {
       setCheckoutStep(1);
-      setPaymentSecondsLeft(480);
+      setPaymentSecondsLeft(PAYMENT_WINDOW_SECONDS);
     }
   }, [isOpen]);
 
-  // 8-minute payment window: runs only on the payment step, stops on step/modal close.
+  // 5-minute payment window: runs only on the payment step, stops on step/modal close.
   useEffect(() => {
     if (!isOpen || checkoutStep !== 3) return;
-    setPaymentSecondsLeft(480);
+    setPaymentSecondsLeft(PAYMENT_WINDOW_SECONDS);
     const timer = setInterval(() => {
       setPaymentSecondsLeft(prev => (prev > 0 ? prev - 1 : 0));
     }, 1000);
