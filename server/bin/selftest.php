@@ -17,6 +17,7 @@ require dirname(__DIR__) . '/private/bootstrap.php';
 
 use Sarmelle\Config\Config;
 use Sarmelle\Config\Env;
+use Sarmelle\Core\Clock;
 
 final class Selftest
 {
@@ -278,6 +279,49 @@ $test->run('config: .env inside the private tree is accepted', function () use (
     );
 
     $test->true(true, 'no exception expected');
+});
+
+// --- Clock -------------------------------------------------------------------
+
+$test->run('clock: now() is Asia/Kolkata at +05:30', function () use ($test): void {
+    $now = Clock::now();
+
+    $test->same('Asia/Kolkata', $now->getTimezone()->getName());
+    $test->same('+05:30', $now->format('P'));
+    $test->same('Asia/Kolkata', Clock::zone()->getName());
+});
+
+$test->run('clock: nowMysql() is a MySQL DATETIME string for the same instant', function () use ($test): void {
+    $value = Clock::nowMysql();
+
+    $test->true(
+        preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $value) === 1,
+        'unexpected MySQL datetime format: ' . $value
+    );
+
+    $parsed = Clock::fromMysql($value);
+    $test->same($value, $parsed->format('Y-m-d H:i:s'));
+    $test->same('+05:30', $parsed->format('P'));
+    $test->true(
+        abs(Clock::now()->getTimestamp() - $parsed->getTimestamp()) <= 2,
+        'nowMysql() is not close to now()'
+    );
+});
+
+$test->run('clock: fromMysql() reads IST wall time, not the server timezone', function () use ($test): void {
+    $parsed = Clock::fromMysql('2026-01-02 03:04:05');
+
+    $test->same('2026-01-02 03:04:05', $parsed->format('Y-m-d H:i:s'));
+    $test->same('+05:30', $parsed->format('P'));
+    $test->same('Asia/Kolkata', $parsed->getTimezone()->getName());
+});
+
+$test->run('clock: fromMysql() rejects a non-datetime string', function () use ($test): void {
+    $test->throws(
+        \InvalidArgumentException::class,
+        'Invalid MySQL datetime',
+        static fn () => Clock::fromMysql('not-a-date')
+    );
 });
 
 exit($test->summary());

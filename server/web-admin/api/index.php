@@ -61,7 +61,25 @@ if ($path === '') {
 }
 
 if ($method === 'GET' && $path === '/api/health') {
-    $respond(200, ['ok' => true]);
+    if (!$config->isLocal()) {
+        $respond(200, ['ok' => true]);
+        exit;
+    }
+
+    try {
+        $checks = \Sarmelle\Core\Connection::diagnostics(
+            \Sarmelle\Core\Connection::open($config)
+        );
+    } catch (\Throwable $exception) {
+        error_log('[sarmelle] local health check failed: ' . $exception->getMessage());
+        $respond(503, [
+            'ok' => false,
+            'error' => ['code' => 'health_check_failed', 'message' => 'A health check failed.'],
+        ]);
+        exit;
+    }
+
+    $respond(200, ['ok' => true, 'checks' => $checks]);
     exit;
 }
 
