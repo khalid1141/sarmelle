@@ -12,6 +12,8 @@
 -- Time rule: all times are IST (Asia/Kolkata, +05:30), not UTC. DATETIME values are stored in IST.
 -- =============================================================================
 
+-- Tables are in dependency order so the file imports with foreign key checks on. Numbers in comments refer to DATABASE.md.
+
 SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
 
@@ -312,53 +314,6 @@ CREATE TABLE IF NOT EXISTS `product_variant_sizes` (
     CONSTRAINT `chk_product_variant_sizes_quantity` CHECK (`quantity` >= 0),
     CONSTRAINT `fk_product_variant_sizes_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT `fk_product_variant_sizes_colour` FOREIGN KEY (`colour_variant_id`) REFERENCES `product_colour_variants` (`id`) ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- -----------------------------------------------------------------------------
--- 10. stock_movements (stock movement history)
--- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `stock_movements` (
-    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    `product_variant_size_id` BIGINT UNSIGNED NOT NULL,
-    `product_id` BIGINT UNSIGNED NOT NULL,
-    `user_id` BIGINT UNSIGNED NULL COMMENT 'Admin user ID if authenticated',
-    `performed_by` VARCHAR(100) NOT NULL COMMENT 'Actor snapshot name or email (who)',
-    `old_quantity` INT NOT NULL,
-    `new_quantity` INT NOT NULL,
-    `quantity_change` INT NOT NULL COMMENT 'Delta: new_quantity - old_quantity',
-    `reason` VARCHAR(255) NOT NULL COMMENT 'e.g. Retail sale, Stock arrival, Audit correction',
-    `order_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Sale that caused the movement; NULL for arrivals and corrections',
-    `cancellation_request_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Cancellation restock or its reversal; NULL for other movements',
-    `return_request_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Return restock or exchange replacement movement; NULL for other movements',
-    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'When movement occurred',
-    INDEX `idx_stock_movements_variant_time` (`product_variant_size_id`, `created_at`),
-    INDEX `idx_stock_movements_product_time` (`product_id`, `created_at`),
-    INDEX `idx_stock_movements_order_id` (`order_id`),
-    INDEX `idx_stock_movements_cancellation_request_id` (`cancellation_request_id`),
-    INDEX `idx_stock_movements_return_request_id` (`return_request_id`),
-    CONSTRAINT `fk_stock_movements_variant_size` FOREIGN KEY (`product_variant_size_id`) REFERENCES `product_variant_sizes` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-    CONSTRAINT `fk_stock_movements_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-    CONSTRAINT `fk_stock_movements_user` FOREIGN KEY (`user_id`) REFERENCES `admin_users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-    CONSTRAINT `fk_stock_movements_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-    CONSTRAINT `fk_stock_movements_cancellation_request` FOREIGN KEY (`cancellation_request_id`) REFERENCES `cancellation_requests` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-    CONSTRAINT `fk_stock_movements_return_request` FOREIGN KEY (`return_request_id`) REFERENCES `return_requests` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- -----------------------------------------------------------------------------
--- 11. stock_holds (temporary checkout reservations, keyed by order)
--- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `stock_holds` (
-    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    `order_id` BIGINT UNSIGNED NOT NULL COMMENT 'Order created when the customer clicked Pay',
-    `product_variant_size_id` BIGINT UNSIGNED NOT NULL,
-    `quantity` INT UNSIGNED NOT NULL,
-    `expires_at` DATETIME NOT NULL COMMENT 'IST expiry of the hold',
-    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY `uq_stock_holds_order_variant` (`order_id`, `product_variant_size_id`),
-    INDEX `idx_stock_holds_variant_expiry` (`product_variant_size_id`, `expires_at`),
-    INDEX `idx_stock_holds_expires_at` (`expires_at`),
-    CONSTRAINT `fk_stock_holds_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT `fk_stock_holds_variant_size` FOREIGN KEY (`product_variant_size_id`) REFERENCES `product_variant_sizes` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
@@ -705,37 +660,6 @@ CREATE TABLE IF NOT EXISTS `payment_webhook_events` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- -----------------------------------------------------------------------------
--- 33. refunds (manual Razorpay refunds; drives the Refund pending list)
--- -----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS `refunds` (
-    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    `order_id` BIGINT UNSIGNED NOT NULL,
-    `payment_id` BIGINT UNSIGNED NOT NULL COMMENT 'Captured payment attempt being refunded',
-    `kind` ENUM('reject', 'cancellation', 'return', 'unfulfilled_payment') NOT NULL,
-    `amount_paise` BIGINT UNSIGNED NOT NULL,
-    `includes_shipping` TINYINT(1) NOT NULL DEFAULT 0,
-    `status` ENUM('pending', 'done') NOT NULL DEFAULT 'pending',
-    `razorpay_refund_id` VARCHAR(64) NULL DEFAULT NULL COMMENT 'Pasted by the owner; optional',
-    `requested_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    `done_at` DATETIME NULL DEFAULT NULL,
-    `done_by` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Admin who ticked Refund done',
-    `cancellation_request_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Cancellation request that caused this refund; NULL for other kinds',
-    `return_request_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Return request that caused this refund; NULL for other kinds',
-    UNIQUE KEY `uq_refunds_razorpay_refund` (`razorpay_refund_id`),
-    INDEX `idx_refunds_status_requested` (`status`, `requested_at`),
-    INDEX `idx_refunds_order_id` (`order_id`),
-    INDEX `idx_refunds_payment_id` (`payment_id`),
-    INDEX `idx_refunds_cancellation_request_id` (`cancellation_request_id`),
-    INDEX `idx_refunds_return_request_id` (`return_request_id`),
-    CONSTRAINT `chk_refunds_done` CHECK ((`status` = 'pending' AND `done_at` IS NULL) OR (`status` = 'done' AND `done_at` IS NOT NULL)),
-    CONSTRAINT `fk_refunds_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-    CONSTRAINT `fk_refunds_payment` FOREIGN KEY (`payment_id`) REFERENCES `payments` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-    CONSTRAINT `fk_refunds_done_by` FOREIGN KEY (`done_by`) REFERENCES `admin_users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-    CONSTRAINT `fk_refunds_cancellation_request` FOREIGN KEY (`cancellation_request_id`) REFERENCES `cancellation_requests` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
-    CONSTRAINT `fk_refunds_return_request` FOREIGN KEY (`return_request_id`) REFERENCES `return_requests` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- -----------------------------------------------------------------------------
 -- 34. coupon_redemptions (which order used which code; releases used_count)
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `coupon_redemptions` (
@@ -895,6 +819,84 @@ CREATE TABLE IF NOT EXISTS `notifications` (
     INDEX `idx_notifications_order_id` (`order_id`),
     INDEX `idx_notifications_related` (`related_type`, `related_id`),
     CONSTRAINT `fk_notifications_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 10. stock_movements (stock movement history)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `stock_movements` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `product_variant_size_id` BIGINT UNSIGNED NOT NULL,
+    `product_id` BIGINT UNSIGNED NOT NULL,
+    `user_id` BIGINT UNSIGNED NULL COMMENT 'Admin user ID if authenticated',
+    `performed_by` VARCHAR(100) NOT NULL COMMENT 'Actor snapshot name or email (who)',
+    `old_quantity` INT NOT NULL,
+    `new_quantity` INT NOT NULL,
+    `quantity_change` INT NOT NULL COMMENT 'Delta: new_quantity - old_quantity',
+    `reason` VARCHAR(255) NOT NULL COMMENT 'e.g. Retail sale, Stock arrival, Audit correction',
+    `order_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Sale that caused the movement; NULL for arrivals and corrections',
+    `cancellation_request_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Cancellation restock or its reversal; NULL for other movements',
+    `return_request_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Return restock or exchange replacement movement; NULL for other movements',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'When movement occurred',
+    INDEX `idx_stock_movements_variant_time` (`product_variant_size_id`, `created_at`),
+    INDEX `idx_stock_movements_product_time` (`product_id`, `created_at`),
+    INDEX `idx_stock_movements_order_id` (`order_id`),
+    INDEX `idx_stock_movements_cancellation_request_id` (`cancellation_request_id`),
+    INDEX `idx_stock_movements_return_request_id` (`return_request_id`),
+    CONSTRAINT `fk_stock_movements_variant_size` FOREIGN KEY (`product_variant_size_id`) REFERENCES `product_variant_sizes` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_stock_movements_product` FOREIGN KEY (`product_id`) REFERENCES `products` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_stock_movements_user` FOREIGN KEY (`user_id`) REFERENCES `admin_users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_stock_movements_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_stock_movements_cancellation_request` FOREIGN KEY (`cancellation_request_id`) REFERENCES `cancellation_requests` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_stock_movements_return_request` FOREIGN KEY (`return_request_id`) REFERENCES `return_requests` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 11. stock_holds (temporary checkout reservations, keyed by order)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `stock_holds` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `order_id` BIGINT UNSIGNED NOT NULL COMMENT 'Order created when the customer clicked Pay',
+    `product_variant_size_id` BIGINT UNSIGNED NOT NULL,
+    `quantity` INT UNSIGNED NOT NULL,
+    `expires_at` DATETIME NOT NULL COMMENT 'IST expiry of the hold',
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY `uq_stock_holds_order_variant` (`order_id`, `product_variant_size_id`),
+    INDEX `idx_stock_holds_variant_expiry` (`product_variant_size_id`, `expires_at`),
+    INDEX `idx_stock_holds_expires_at` (`expires_at`),
+    CONSTRAINT `fk_stock_holds_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT `fk_stock_holds_variant_size` FOREIGN KEY (`product_variant_size_id`) REFERENCES `product_variant_sizes` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- -----------------------------------------------------------------------------
+-- 33. refunds (manual Razorpay refunds; drives the Refund pending list)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `refunds` (
+    `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    `order_id` BIGINT UNSIGNED NOT NULL,
+    `payment_id` BIGINT UNSIGNED NOT NULL COMMENT 'Captured payment attempt being refunded',
+    `kind` ENUM('reject', 'cancellation', 'return', 'unfulfilled_payment') NOT NULL,
+    `amount_paise` BIGINT UNSIGNED NOT NULL,
+    `includes_shipping` TINYINT(1) NOT NULL DEFAULT 0,
+    `status` ENUM('pending', 'done') NOT NULL DEFAULT 'pending',
+    `razorpay_refund_id` VARCHAR(64) NULL DEFAULT NULL COMMENT 'Pasted by the owner; optional',
+    `requested_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `done_at` DATETIME NULL DEFAULT NULL,
+    `done_by` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Admin who ticked Refund done',
+    `cancellation_request_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Cancellation request that caused this refund; NULL for other kinds',
+    `return_request_id` BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Return request that caused this refund; NULL for other kinds',
+    UNIQUE KEY `uq_refunds_razorpay_refund` (`razorpay_refund_id`),
+    INDEX `idx_refunds_status_requested` (`status`, `requested_at`),
+    INDEX `idx_refunds_order_id` (`order_id`),
+    INDEX `idx_refunds_payment_id` (`payment_id`),
+    INDEX `idx_refunds_cancellation_request_id` (`cancellation_request_id`),
+    INDEX `idx_refunds_return_request_id` (`return_request_id`),
+    CONSTRAINT `chk_refunds_done` CHECK ((`status` = 'pending' AND `done_at` IS NULL) OR (`status` = 'done' AND `done_at` IS NOT NULL)),
+    CONSTRAINT `fk_refunds_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_refunds_payment` FOREIGN KEY (`payment_id`) REFERENCES `payments` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_refunds_done_by` FOREIGN KEY (`done_by`) REFERENCES `admin_users` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_refunds_cancellation_request` FOREIGN KEY (`cancellation_request_id`) REFERENCES `cancellation_requests` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT `fk_refunds_return_request` FOREIGN KEY (`return_request_id`) REFERENCES `return_requests` (`id`) ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;
