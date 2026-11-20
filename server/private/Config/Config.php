@@ -118,16 +118,32 @@ final class Config
             }
         }
 
+        $known = array_merge(self::REQUIRED, array_keys(self::DEFAULTS));
+
+        foreach ($values as $key => $value) {
+            if (!is_string($key)) {
+                throw new \RuntimeException('Configuration keys must be strings.');
+            }
+
+            if (!in_array($key, $known, true)) {
+                $suggestion = self::closestKey($key, $known);
+
+                throw new \RuntimeException(
+                    'Unknown configuration key: ' . $key
+                    . ($suggestion !== null ? ' (did you mean ' . $suggestion . '?)' : '')
+                    . '. Remove it from server/private/config/.env.'
+                );
+            }
+        }
+
         $merged = self::DEFAULTS;
 
         foreach ($values as $key => $value) {
-            if (!is_string($key) || !is_scalar($value)) {
-                continue;
+            if ($value !== null && !is_scalar($value)) {
+                throw new \RuntimeException('Configuration key ' . $key . ' must be a scalar value.');
             }
 
-            if (array_key_exists($key, self::DEFAULTS) || in_array($key, self::REQUIRED, true)) {
-                $merged[$key] = (string) $value;
-            }
+            $merged[$key] = (string) $value;
         }
 
         $config = new self($merged, self::normalisePath($privateRoot));
@@ -269,8 +285,9 @@ final class Config
             throw new \RuntimeException('DB_TIMEZONE must be ' . self::TIMEZONE_OFFSET . '.');
         }
 
-        $this->bool('DB_SSL');
-        $this->string('DB_SSL_CA');
+        if ($this->bool('DB_SSL') && trim($this->string('DB_SSL_CA')) === '') {
+            throw new \RuntimeException('DB_SSL_CA must be set when DB_SSL=1.');
+        }
 
         $this->assertIntRange('SESSION_LIFETIME_CUSTOMER_DAYS', 1, 3650);
         $this->assertIntRange('ADMIN_SESSION_IDLE_MINUTES', 1, 1440);
@@ -363,6 +380,29 @@ final class Config
             '0', 'false', 'no', 'off' => false,
             default => throw new \RuntimeException('Configuration key ' . $key . ' must be a boolean.'),
         };
+    }
+
+    /**
+     * Suggests a known key for a typo, but only when the names are close.
+     *
+     * @param array<int, string> $known
+     */
+    private static function closestKey(string $key, array $known): ?string
+    {
+        $needle = strtoupper($key);
+        $best = null;
+        $bestPercent = 0.0;
+
+        foreach ($known as $candidate) {
+            similar_text($needle, strtoupper($candidate), $percent);
+
+            if ($percent > $bestPercent) {
+                $bestPercent = $percent;
+                $best = $candidate;
+            }
+        }
+
+        return $bestPercent >= 60.0 ? $best : null;
     }
 
     private static function normalisePath(string $path): string

@@ -17,7 +17,13 @@ require dirname(__DIR__) . '/private/bootstrap.php';
 
 use Sarmelle\Config\Config;
 use Sarmelle\Config\Env;
+use Sarmelle\Core\ClientIp;
 use Sarmelle\Core\Clock;
+use Sarmelle\Core\Json;
+use Sarmelle\Core\Request;
+use Sarmelle\Core\Response;
+use Sarmelle\Core\Router;
+use Sarmelle\Http\SecurityHeaders;
 
 final class Selftest
 {
@@ -253,6 +259,28 @@ $test->run('config: a non-integer port is refused', function () use ($test, $bas
     );
 });
 
+$test->run('config: an unknown key is refused and the closest key is suggested', function () use ($test, $baseConfig): void {
+    $caught = null;
+
+    try {
+        Config::fromArray($baseConfig(['DB_PASS' => 'typo']));
+    } catch (\RuntimeException $exception) {
+        $caught = $exception;
+    }
+
+    $test->true($caught instanceof \RuntimeException, 'an unknown key must be refused');
+    $test->true(str_contains($caught->getMessage(), 'DB_PASS'), 'the unknown key must be named');
+    $test->true(str_contains($caught->getMessage(), 'DB_PASSWORD'), 'the closest key must be suggested');
+});
+
+$test->run('config: DB_SSL=1 requires DB_SSL_CA', function () use ($test, $baseConfig): void {
+    $test->throws(
+        \RuntimeException::class,
+        'DB_SSL_CA',
+        static fn () => Config::fromArray($baseConfig(['DB_SSL' => '1']))
+    );
+});
+
 $test->run('config: .env inside a web root is refused', function () use ($test): void {
     $test->throws(
         \RuntimeException::class,
@@ -322,6 +350,173 @@ $test->run('clock: fromMysql() rejects a non-datetime string', function () use (
         'Invalid MySQL datetime',
         static fn () => Clock::fromMysql('not-a-date')
     );
+});
+
+// --- JSON, router, headers and client IP -------------------------------------
+
+$test->run('json: only a JSON object body is accepted', function () use ($test): void {
+    $test->same([], Json::decodeObject(''));
+    $test->same([], Json::decodeObject('{}'));
+    $test->same(['a' => 1], Json::decodeObject('{"a":1}'));
+    $test->throws(\InvalidArgumentException::class, 'Malformed', static fn () => Json::decodeObject('{"a":'));
+    $test->throws(\InvalidArgumentException::class, 'JSON object', static fn () => Json::decodeObject('[]'));
+});
+
+$routerConfig = Config::fromArray($baseConfig());
+
+$buildRouter = static function (Config $config): Router {
+    $router = new Router($config, $config->appUrl());
+    $router->add('GET', '/api/health', static fn (Request $request): Response => Response::raw(['ok' => true]));
+    $router->add('GET', '/api/boom', static function (Request $request): Response {
+        throw new \RuntimeException('SQLSTATE[HY000] secret detail');
+    });
+    $router->add(
+        'POST',
+        '/api/test',
+        static fn (Request $request): Response => Response::success(['received' => $request->json()])
+    );
+
+    return $router;
+};
+
+$test->run('router: unknown path is 404 with a request id and no CORS header', function () use ($test, $buildRouter, $routerConfig): void {
+    $response = $buildRouter($routerConfig)->dispatch(new Request('GET', '/api/missing'));
+    $body = $response->decoded();
+
+    $test->same(404, $response->status());
+    $test->same('not_found', $body['error']['code']);
+    $test->true(isset($body['error']['request_id']), 'request_id is missing');
+    $test->same(null, $response->header('Access-Control-Allow-Origin'));
+});
+
+$test->run('router: a known path with the wrong method is 405 with Allow', function () use ($test, $buildRouter, $routerConfig): void {
+    $response = $buildRouter($routerConfig)->dispatch(new Request('DELETE', '/api/health'));
+
+    $test->same(405, $response->status());
+    $test->same('GET', $response->header('Allow'));
+    $test->same('method_not_allowed', $response->decoded()['error']['code']);
+});
+
+$test->run('router: an oversized body is 413 before JSON parsing', function () use ($test, $buildRouter, $baseConfig): void {
+    $config = Config::fromArray($baseConfig(['MAX_JSON_BYTES' => '1024']));
+    $response = $buildRouter($config)->dispatch(
+        new Request('POST', '/api/test', ['content-type' => 'application/json'], str_repeat('a', 1025))
+    );
+
+    $test->same(413, $response->status());
+    $test->same('payload_too_large', $response->decoded()['error']['code']);
+});
+
+$test->run('router: malformed JSON is validation_failed', function () use ($test, $buildRouter, $routerConfig): void {
+    $response = $buildRouter($routerConfig)->dispatch(
+        new Request('POST', '/api/test', ['content-type' => 'application/json'], '{"a":')
+    );
+
+    $test->same(422, $response->status());
+    $test->same('validation_failed', $response->decoded()['error']['code']);
+    $test->true(isset($response->decoded()['error']['fields']['body']), 'body field error is missing');
+});
+
+$test->run('router: a form post is rejected as validation_failed', function () use ($test, $buildRouter, $routerConfig): void {
+    $response = $buildRouter($routerConfig)->dispatch(
+        new Request('POST', '/api/test', ['content-type' => 'application/x-www-form-urlencoded'], 'a=1')
+    );
+
+    $test->same(422, $response->status());
+    $test->same('validation_failed', $response->decoded()['error']['code']);
+});
+
+$test->run('router: a foreign Origin on POST is csrf_failed', function () use ($test, $buildRouter, $routerConfig): void {
+    $response = $buildRouter($routerConfig)->dispatch(new Request(
+        'POST',
+        '/api/test',
+        ['content-type' => 'application/json', 'origin' => 'https://evil.example'],
+        '{}'
+    ));
+
+    $test->same(403, $response->status());
+    $test->same('csrf_failed', $response->decoded()['error']['code']);
+});
+
+$test->run('router: a local dev Origin is accepted and JSON reaches the handler', function () use ($test, $buildRouter, $routerConfig): void {
+    $response = $buildRouter($routerConfig)->dispatch(new Request(
+        'POST',
+        '/api/test',
+        ['content-type' => 'application/json', 'origin' => 'http://localhost:3000'],
+        '{"name":"x"}'
+    ));
+
+    $test->same(200, $response->status());
+    $test->same(['received' => ['name' => 'x']], $response->decoded()['data']);
+});
+
+$test->run('router: 500 hides detail unless APP_DEBUG=1', function () use ($test, $buildRouter, $routerConfig, $baseConfig): void {
+    $production = Config::fromArray($baseConfig(['APP_ENV' => 'production', 'APP_DEBUG' => '0']));
+    $hidden = $buildRouter($production)->dispatch(new Request('GET', '/api/boom'));
+
+    $test->same(500, $hidden->status());
+    $test->same('server_error', $hidden->decoded()['error']['code']);
+    $test->true(isset($hidden->decoded()['error']['request_id']), 'request_id is missing');
+    $test->true(!str_contains($hidden->body(), 'SQLSTATE'), 'SQL detail leaked into the response');
+    $test->true(!str_contains($hidden->body(), 'secret detail'), 'exception detail leaked into the response');
+
+    $visible = $buildRouter($routerConfig)->dispatch(new Request('GET', '/api/boom'));
+    $test->true(str_contains($visible->body(), 'SQLSTATE'), 'APP_DEBUG=1 should include the detail');
+});
+
+$test->run('response: the health body is exactly {"ok":true}', function () use ($test, $buildRouter, $routerConfig): void {
+    $response = $buildRouter($routerConfig)->dispatch(new Request('GET', '/api/health'));
+
+    $test->same(200, $response->status());
+    $test->same('{"ok":true}', $response->body());
+    $test->same(null, $response->header('Access-Control-Allow-Origin'));
+});
+
+$test->run('response: success wraps data and an empty payload is an object', function () use ($test): void {
+    $test->same(
+        ['ok' => true, 'data' => ['id' => 7]],
+        Response::success(['id' => 7])->decoded()
+    );
+    $test->true(
+        str_contains(Response::success()->body(), '"data":{}'),
+        'empty data must encode as an object'
+    );
+});
+
+$test->run('headers: security headers are set and admin denies framing', function () use ($test, $buildRouter, $routerConfig): void {
+    $response = $buildRouter($routerConfig)->dispatch(new Request('GET', '/api/health'));
+
+    $secured = (new SecurityHeaders())->apply($response);
+    $test->same('no-store', $secured->header('Cache-Control'));
+    $test->same('nosniff', $secured->header('X-Content-Type-Options'));
+    $test->same('no-referrer', $secured->header('Referrer-Policy'));
+    $test->same(null, $secured->header('X-Frame-Options'));
+
+    $admin = (new SecurityHeaders(true))->apply($response);
+    $test->same('DENY', $admin->header('X-Frame-Options'));
+});
+
+$test->run('client ip: X-Forwarded-For is ignored without a trusted peer', function () use ($test): void {
+    $test->same('203.0.113.9', ClientIp::resolve('203.0.113.9', '1.1.1.1, 2.2.2.2', ''));
+    $test->same('203.0.113.9', ClientIp::resolve('203.0.113.9', '1.1.1.1', '10.0.0.1'));
+});
+
+$test->run('client ip: right-most untrusted entry is used behind a trusted proxy', function () use ($test): void {
+    $test->same('2.2.2.2', ClientIp::resolve('10.0.0.1', '1.1.1.1, 2.2.2.2', '10.0.0.1'));
+    $test->same(
+        '1.1.1.1',
+        ClientIp::resolve('10.0.0.1', '1.1.1.1, 10.0.0.2', '10.0.0.1, 10.0.0.2')
+    );
+    $test->same('2001:db8::1', ClientIp::resolve('2001:db8::2', 'junk, 2001:db8::1', '2001:db8::2'));
+});
+
+$test->run('client ip: all-trusted or invalid chains fall back to REMOTE_ADDR', function () use ($test): void {
+    $test->same(
+        '10.0.0.1',
+        ClientIp::resolve('10.0.0.1', '10.0.0.2, 10.0.0.3', '10.0.0.1, 10.0.0.2, 10.0.0.3')
+    );
+    $test->same('10.0.0.1', ClientIp::resolve('10.0.0.1', 'not-an-ip', '10.0.0.1'));
+    $test->same('10.0.0.1', ClientIp::resolve('10.0.0.1', '', '10.0.0.1'));
 });
 
 exit($test->summary());

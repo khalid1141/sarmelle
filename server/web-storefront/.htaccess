@@ -1,0 +1,27 @@
+Options -Indexes
+
+DirectoryIndex index.php index.html
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+
+    # Deny dotfiles, except ACME challenges.
+    RewriteRule (^|/)\.(?!well-known/) - [F,L]
+
+    # The front controller is an implementation detail, not a URL.
+    RewriteCond %{THE_REQUEST} \s/+api/index\.php[\s?] [NC]
+    RewriteRule ^api/index\.php$ - [F,L]
+
+    # /api and /api/* go to the API front controller; real files stay static.
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteRule ^api(/.*)?$ api/index.php [L,QSA]
+</IfModule>
+
+<Files "bootstrap-path.php">
+    Require all denied
+</Files>
+
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set Referrer-Policy "no-referrer"
+</IfModule>

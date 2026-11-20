@@ -3,47 +3,48 @@ declare(strict_types=1);
 
 /**
  * Admin API entry point.
- * Slice 1 answers GET /api/health only; the router arrives in slice 3.
- * Storefront routes are never registered on this host.
+ * Registers only admin routes; storefront routes never exist on this host.
  */
 
+use Sarmelle\Config\Config;
+use Sarmelle\Core\Connection;
+use Sarmelle\Core\Request;
+use Sarmelle\Core\Response;
+use Sarmelle\Core\Router;
+use Sarmelle\Http\ErrorHandler;
+use Sarmelle\Http\SecurityHeaders;
+
+$isAdmin = true;
 $bootstrapPathFile = __DIR__ . '/../bootstrap-path.php';
 
-$respond = static function (int $status, array $payload): void {
-    http_response_code($status);
+$respondNotConfigured = static function (): void {
+    http_response_code(500);
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store');
-    echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    echo '{"ok":false,"error":{"code":"server_error","message":"Server is not configured."}}';
 };
 
 if (!is_file($bootstrapPathFile)) {
-    $respond(500, [
-        'ok' => false,
-        'error' => ['code' => 'server_error', 'message' => 'Server is not configured.'],
-    ]);
+    $respondNotConfigured();
     exit;
 }
 
 $privateRoot = require $bootstrapPathFile;
 
 if (!is_string($privateRoot) || trim($privateRoot) === '') {
-    $respond(500, [
-        'ok' => false,
-        'error' => ['code' => 'server_error', 'message' => 'Server is not configured.'],
-    ]);
+    $respondNotConfigured();
     exit;
 }
 
 require rtrim(str_replace('\\', '/', $privateRoot), '/') . '/bootstrap.php';
 
+$requestId = Request::newRequestId();
+
 try {
-    $config = \Sarmelle\Config\Config::load($privateRoot);
+    $config = Config::load($privateRoot);
 } catch (\Throwable $exception) {
-    error_log('[sarmelle] configuration failure: ' . $exception->getMessage());
-    $respond(500, [
-        'ok' => false,
-        'error' => ['code' => 'server_error', 'message' => 'Server is not configured.'],
-    ]);
+    $response = ErrorHandler::serverError($requestId, $exception, false);
+    (new SecurityHeaders($isAdmin))->apply($response)->send();
     exit;
 }
 
@@ -51,39 +52,19 @@ if (!defined('SARM_DEBUG')) {
     define('SARM_DEBUG', $config->debug());
 }
 
-$method = strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET'));
-$rawPath = parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH);
-$path = is_string($rawPath) && $rawPath !== '' ? $rawPath : '/';
-$path = rtrim($path, '/');
+$router = new Router($config, $config->adminUrl());
 
-if ($path === '') {
-    $path = '/';
-}
-
-if ($method === 'GET' && $path === '/api/health') {
+$router->add('GET', '/api/health', static function (Request $request) use ($config): Response {
     if (!$config->isLocal()) {
-        $respond(200, ['ok' => true]);
-        exit;
+        return Response::raw(['ok' => true]);
     }
 
-    try {
-        $checks = \Sarmelle\Core\Connection::diagnostics(
-            \Sarmelle\Core\Connection::open($config)
-        );
-    } catch (\Throwable $exception) {
-        error_log('[sarmelle] local health check failed: ' . $exception->getMessage());
-        $respond(503, [
-            'ok' => false,
-            'error' => ['code' => 'health_check_failed', 'message' => 'A health check failed.'],
-        ]);
-        exit;
-    }
+    $checks = Connection::diagnostics(Connection::open($config));
 
-    $respond(200, ['ok' => true, 'checks' => $checks]);
-    exit;
-}
+    return Response::raw(['ok' => true, 'checks' => $checks]);
+});
 
-$respond(404, [
-    'ok' => false,
-    'error' => ['code' => 'not_found', 'message' => 'Not found.'],
-]);
+$request = Request::fromGlobals($config->int('MAX_JSON_BYTES'), $requestId);
+$response = $router->dispatch($request);
+
+(new SecurityHeaders($isAdmin))->apply($response)->send();
