@@ -15,6 +15,7 @@ if (PHP_SAPI !== 'cli') {
 
 require dirname(__DIR__) . '/private/bootstrap.php';
 
+use Sarmelle\Auth\Policy;
 use Sarmelle\Config\Config;
 use Sarmelle\Config\Env;
 use Sarmelle\Core\ClientIp;
@@ -23,7 +24,11 @@ use Sarmelle\Core\Json;
 use Sarmelle\Core\Request;
 use Sarmelle\Core\Response;
 use Sarmelle\Core\Router;
+use Sarmelle\Http\Csrf;
 use Sarmelle\Http\SecurityHeaders;
+use Sarmelle\Support\Normaliser;
+use Sarmelle\Support\ValidationException;
+use Sarmelle\Support\Validator;
 
 final class Selftest
 {
@@ -517,6 +522,241 @@ $test->run('client ip: all-trusted or invalid chains fall back to REMOTE_ADDR', 
     );
     $test->same('10.0.0.1', ClientIp::resolve('10.0.0.1', 'not-an-ip', '10.0.0.1'));
     $test->same('10.0.0.1', ClientIp::resolve('10.0.0.1', '', '10.0.0.1'));
+});
+
+// --- Slice 4: normalisers, validator, CSRF and policy ------------------------
+
+$fieldsOf = static function (callable $callable): array {
+    try {
+        $callable();
+    } catch (ValidationException $exception) {
+        return $exception->fields();
+    }
+
+    throw new \RuntimeException('expected a ValidationException');
+};
+
+$test->run('normaliser: email is trimmed, lowercased and validated', function () use ($test): void {
+    $test->same('foo@bar.com', Normaliser::email('  Foo@Bar.COM '));
+    $test->same(null, Normaliser::email('nope'));
+    $test->same(null, Normaliser::email(''));
+    $test->same(null, Normaliser::email(str_repeat('a', 250) . '@example.com'));
+});
+
+$test->run('normaliser: phone becomes + and 10 to 13 digits', function () use ($test): void {
+    $test->same('+919876543210', Normaliser::phone('+91 98765 43210'));
+    $test->same('+919876543210', Normaliser::phone('0091-9876543210'));
+    $test->same('+9876543210', Normaliser::phone('9876543210'));
+    $test->same(null, Normaliser::phone('12345'));
+    $test->same(null, Normaliser::phone('abcdefghij'));
+});
+
+$test->run('normaliser: OTP is exactly six digits and names are 1 to 150 characters', function () use ($test): void {
+    $test->same('123456', Normaliser::otp(' 123456 '));
+    $test->same(null, Normaliser::otp('12345'));
+    $test->same(null, Normaliser::otp('1234567'));
+    $test->same(null, Normaliser::otp('12345a'));
+
+    $test->same('Aarav Sharma', Normaliser::name('  Aarav   Sharma '));
+    $test->same(null, Normaliser::name(''));
+    $test->same(null, Normaliser::name("A\nB"));
+    $test->same(null, Normaliser::name(str_repeat('a', 151)));
+    $test->same(150, mb_strlen(Normaliser::name(str_repeat('a', 150)) ?? '', 'UTF-8'));
+});
+
+$test->run('validator: unknown keys are rejected by name', function () use ($test, $fieldsOf): void {
+    $validator = new Validator(['email' => ['required', 'string', 'email']]);
+    $fields = $fieldsOf(static fn () => $validator->validate([
+        'email' => 'a@b.co',
+        'nickname' => 'x',
+    ]));
+
+    $test->true(isset($fields['nickname']), 'unknown key was not rejected');
+});
+
+$test->run('validator: normalises email and omits absent optional fields', function () use ($test): void {
+    $validator = new Validator([
+        'email' => ['required', 'string', 'email'],
+        'phone' => ['optional', 'string', 'phone'],
+    ]);
+
+    $values = $validator->validate(['email' => '  Foo@Bar.COM ']);
+
+    $test->same('foo@bar.com', $values['email']);
+    $test->true(!array_key_exists('phone', $values), 'absent optional field was returned');
+});
+
+$test->run('validator: required, type, enum, regex and length rules', function () use ($test, $fieldsOf): void {
+    $validator = new Validator([
+        'role' => ['required', 'string', 'enum:admin,customer'],
+        'code' => ['required', 'string', 'regex:/^[A-Z]{3}$/'],
+        'nick' => ['required', 'string', 'min:2', 'max:5'],
+        'name' => ['required', 'string', 'trim', 'collapse_spaces', 'name'],
+    ]);
+
+    $values = $validator->validate([
+        'role' => 'admin',
+        'code' => 'ABC',
+        'nick' => 'ok',
+        'name' => '  Aarav   Sharma ',
+    ]);
+
+    $test->same('Aarav Sharma', $values['name']);
+
+    $fields = $fieldsOf(static fn () => $validator->validate([
+        'role' => 'root',
+        'code' => 'abc',
+        'nick' => 'a',
+        'name' => 'Aarav',
+    ]));
+
+    $test->true(isset($fields['role'], $fields['code'], $fields['nick']), 'one or more rules did not fail');
+
+    $typed = new Validator([
+        'age' => ['required', 'int'],
+        'active' => ['required', 'bool'],
+        'tags' => ['required', 'array'],
+    ]);
+    $typeFields = $fieldsOf(static fn () => $typed->validate([
+        'age' => '7',
+        'active' => 1,
+        'tags' => 'x',
+    ]));
+
+    $test->true(
+        isset($typeFields['age'], $typeFields['active'], $typeFields['tags']),
+        'type checks did not all fail'
+    );
+});
+
+$test->run('validator: bcrypt counts bytes for the 72-byte cap', function () use ($test, $fieldsOf): void {
+    $validator = new Validator(['password' => ['required', 'string', 'password:bcrypt']]);
+
+    foreach ([
+        str_repeat('a', 12),
+        str_repeat("\u{00E9}", 12),
+        str_repeat('a', 72),
+        str_repeat("\u{00E9}", 36),
+    ] as $accepted) {
+        $validator->validate(['password' => $accepted]);
+    }
+
+    foreach ([
+        str_repeat('a', 73),
+        str_repeat("\u{00E9}", 37),
+        str_repeat('a', 100000),
+    ] as $rejected) {
+        $fields = $fieldsOf(static fn () => $validator->validate(['password' => $rejected]));
+        $test->true(isset($fields['password']), 'password should have been rejected');
+    }
+});
+
+$test->run('validator: argon2id counts characters for the 128-character cap', function () use ($test, $fieldsOf): void {
+    $validator = new Validator(['password' => ['required', 'string', 'password:argon2id']]);
+
+    $validator->validate(['password' => str_repeat('a', 128)]);
+
+    $fields = $fieldsOf(static fn () => $validator->validate(['password' => str_repeat('a', 129)]));
+    $test->true(isset($fields['password']), '129 characters should have been rejected');
+});
+
+$test->run('validator: errors never echo passwords or OTPs', function () use ($test, $fieldsOf): void {
+    $password = str_repeat('S3cret!', 12);
+    $validator = new Validator(['password' => ['required', 'string', 'password:bcrypt']]);
+    $fields = $fieldsOf(static fn () => $validator->validate(['password' => $password]));
+
+    $test->true(isset($fields['password']), 'password error is missing');
+
+    foreach ($fields as $message) {
+        $test->true(!str_contains($message, $password), 'password leaked into a validation message');
+    }
+
+    $otpValidator = new Validator(['otp' => ['required', 'string', 'otp']]);
+    $otpFields = $fieldsOf(static fn () => $otpValidator->validate(['otp' => '123456789']));
+
+    foreach ($otpFields as $message) {
+        $test->true(!str_contains($message, '123456789'), 'OTP leaked into a validation message');
+    }
+});
+
+$test->run('csrf: customer token matches, rotates and clears', function () use ($test): void {
+    $_SESSION = [];
+
+    $token = Csrf::issueCustomerToken();
+    $test->same(64, strlen($token));
+    $test->true(Csrf::verifyCustomer($token), 'valid customer token rejected');
+    $test->true(!Csrf::verifyCustomer($token . 'x'), 'wrong customer token accepted');
+    $test->true(!Csrf::verifyCustomer(null), 'missing customer token accepted');
+
+    $rotated = Csrf::issueCustomerToken();
+    $test->true($rotated !== $token, 'customer token did not rotate');
+    $test->true(!Csrf::verifyCustomer($token), 'old customer token is still valid');
+    $test->true(Csrf::verifyCustomer($rotated), 'rotated customer token rejected');
+
+    Csrf::clearCustomerToken();
+    $test->true(!Csrf::verifyCustomer($rotated), 'cleared customer token is still valid');
+});
+
+$test->run('csrf: admin double-submit requires cookie and header to match', function () use ($test): void {
+    $token = Csrf::issueAdminToken();
+
+    $test->true(Csrf::verifyAdmin($token, $token), 'matching admin token rejected');
+    $test->true(!Csrf::verifyAdmin($token, $token . 'x'), 'mismatched admin token accepted');
+    $test->true(!Csrf::verifyAdmin(null, $token), 'missing admin cookie accepted');
+    $test->true(!Csrf::verifyAdmin($token, null), 'missing admin header accepted');
+});
+
+$test->run('policy: fixed constants match the design', function () use ($test): void {
+    $test->same(5, Policy::LOGIN_FAILURES_PER_IDENTIFIER);
+    $test->same(15, Policy::LOGIN_WINDOW_MINUTES);
+    $test->same(15, Policy::LOCKOUT_MINUTES);
+    $test->same(20, Policy::LOGIN_FAILURES_PER_IP);
+    $test->same(60, Policy::IP_WINDOW_MINUTES);
+    $test->same(3, Policy::OTP_REQUESTS_PER_HOUR);
+    $test->same(3, Policy::PASSWORD_RESET_REQUESTS_PER_HOUR);
+    $test->same(6, Policy::OTP_LENGTH);
+    $test->same(10, Policy::OTP_LIFETIME_MINUTES);
+    $test->same(10, Policy::PENDING_COOKIE_LIFETIME_MINUTES);
+    $test->same(5, Policy::OTP_MAX_ATTEMPTS);
+    $test->same(12, Policy::PASSWORD_MIN_LENGTH);
+    $test->same(72, Policy::PASSWORD_BCRYPT_MAX_BYTES);
+    $test->same(128, Policy::PASSWORD_ARGON2ID_MAX_CHARS);
+    $test->same('bcrypt', Policy::passwordAlgorithm('bcrypt'));
+    $test->same('argon2id', Policy::passwordAlgorithm('argon2id'));
+    $test->true(
+        in_array(Policy::passwordAlgorithm('auto'), ['argon2id', 'bcrypt'], true),
+        'auto did not resolve to a known algorithm'
+    );
+});
+
+$test->run('router: a ValidationException becomes validation_failed', function () use ($test, $buildRouter, $routerConfig): void {
+    $router = $buildRouter($routerConfig);
+    $router->add('POST', '/api/validate', static function (Request $request): Response {
+        $values = (new Validator(['email' => ['required', 'string', 'email']]))->validate($request->json());
+
+        return Response::success($values);
+    });
+
+    $invalid = $router->dispatch(new Request(
+        'POST',
+        '/api/validate',
+        ['content-type' => 'application/json'],
+        '{"email":"nope"}'
+    ));
+
+    $test->same(422, $invalid->status());
+    $test->same('validation_failed', $invalid->decoded()['error']['code']);
+    $test->true(isset($invalid->decoded()['error']['fields']['email']), 'email field error is missing');
+
+    $valid = $router->dispatch(new Request(
+        'POST',
+        '/api/validate',
+        ['content-type' => 'application/json'],
+        '{"email":"  Foo@Bar.COM "}'
+    ));
+
+    $test->same(200, $valid->status());
+    $test->same('foo@bar.com', $valid->decoded()['data']['email']);
 });
 
 exit($test->summary());

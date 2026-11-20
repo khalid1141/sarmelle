@@ -5,6 +5,7 @@ namespace Sarmelle\Core;
 
 use Sarmelle\Config\Config;
 use Sarmelle\Http\ErrorHandler;
+use Sarmelle\Support\ValidationException;
 
 /**
  * Single front controller router: explicit method + path table.
@@ -86,6 +87,11 @@ final class Router
             }
 
             return $this->finish($response, $requestId);
+        } catch (ValidationException $exception) {
+            return $this->finish(
+                ErrorHandler::validation($requestId, $exception->fields()),
+                $requestId
+            );
         } catch (\Throwable $exception) {
             return $this->finish(
                 ErrorHandler::serverError($requestId, $exception, $this->debug),
