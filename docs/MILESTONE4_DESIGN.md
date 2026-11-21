@@ -42,7 +42,7 @@ sarmelle/                          # repository (source of truth)
       Support/                     # validator, normaliser, hash helpers, activity log
       var/                         # logs, sent-mail copies, PHP sessions
       vendor/                      # Composer output (absent until slice 5)
-      config/.env                  # per-deployment secrets, never committed
+      Config/.env                  # per-deployment secrets, never committed
     web-storefront/                # storefront web root (sarmelle.com)
       index.php                    # serves the React build / SEO-injected pages
       api/index.php                # the only API entry point for the storefront
@@ -124,7 +124,8 @@ and no `?>` closing tags in PHP-only files.
 
 ## 2. Config loading
 
-- One `.env` file per deployment at `server/private/config/.env`. It is never committed.
+- One `.env` file per deployment at `server/private/Config/.env` (capital `C`, matching
+  the directory on disk). It is never committed.
 - `.env.example` is committed at the repository root with placeholder names and no secrets.
 - The loader is hand-written (no dotenv package): `KEY=value`, `#` comments, optional single
   or double quotes, no variable interpolation, no `export`, no `${}` expansion.

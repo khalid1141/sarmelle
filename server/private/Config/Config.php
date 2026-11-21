@@ -6,7 +6,7 @@ namespace Sarmelle\Config;
 /**
  * Typed configuration for one deployment.
  *
- * Values come from server/private/config/.env, which is never committed.
+ * Values come from server/private/Config/.env, which is never committed.
  * Process environment variables are deliberately not merged, so web and CLI
  * cannot disagree about the same deployment.
  */
@@ -88,13 +88,13 @@ final class Config
     public static function load(string $privateRoot): self
     {
         $root = self::normalisePath($privateRoot);
-        $envPath = self::normalisePath($root . '/config/.env');
+        $envPath = self::normalisePath($root . '/Config/.env');
 
         self::assertSafeEnvPath($envPath, $root);
 
         if (!is_file($envPath)) {
             throw new \RuntimeException(
-                'Configuration file is missing. Copy .env.example to server/private/config/.env.'
+                'Configuration file is missing. Copy .env.example to server/private/Config/.env.'
             );
         }
 
@@ -131,7 +131,7 @@ final class Config
                 throw new \RuntimeException(
                     'Unknown configuration key: ' . $key
                     . ($suggestion !== null ? ' (did you mean ' . $suggestion . '?)' : '')
-                    . '. Remove it from server/private/config/.env.'
+                    . '. Remove it from server/private/Config/.env.'
                 );
             }
         }

@@ -321,12 +321,30 @@ $test->run('config: .env outside the private tree is refused', function () use (
 
 $test->run('config: .env inside the private tree is accepted', function () use ($test): void {
     Config::assertSafeEnvPath(
-        'C:/repo/server/private/config/.env',
+        'C:/repo/server/private/Config/.env',
         'C:/repo/server/private',
         ''
     );
 
     $test->true(true, 'no exception expected');
+});
+
+$test->run('config: the on-disk .env directory is exactly Config (case-sensitive)', function () use ($test): void {
+    // file_exists() cannot prove the case on Windows, so compare the real
+    // directory entry name returned by scandir().
+    $privateRoot = dirname(__DIR__) . '/private';
+    $entries = scandir($privateRoot);
+
+    $test->true(is_array($entries), 'could not list server/private');
+
+    $test->true(
+        in_array('Config', $entries, true),
+        'server/private/Config is missing (expected that exact case)'
+    );
+    $test->true(
+        !in_array('config', $entries, true),
+        'a lowercase server/private/config directory also exists; the path is ambiguous'
+    );
 });
 
 // --- Config hardening --------------------------------------------------------
