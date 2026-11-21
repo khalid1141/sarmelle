@@ -114,6 +114,19 @@ $baseConfig = static fn (array $overrides = []): array => array_merge([
     'DB_TIMEZONE' => '+05:30',
 ], $overrides);
 
+$productionConfig = static fn (array $overrides = []): array => $baseConfig(array_merge([
+    'APP_ENV' => 'production',
+    'APP_DEBUG' => '0',
+    'APP_URL' => 'https://sarmelle.com',
+    'ADMIN_URL' => 'https://admin.sarmelle.com',
+    'COOKIE_SECURE' => '1',
+    'MAIL_TRANSPORT' => 'smtp',
+    'MAIL_HOST' => 'smtp.example.com',
+    'MAIL_USERNAME' => 'mailer@example.com',
+    'MAIL_PASSWORD' => 'smtp-secret',
+    'MAIL_FROM_ADDRESS' => 'shop@example.com',
+], $overrides));
+
 // --- Parser -----------------------------------------------------------------
 
 $test->run('env: simple keys, empty value and full-line comments', function () use ($test): void {
@@ -194,16 +207,16 @@ $test->run('config: a missing required key is named in the error', function () u
     $test->throws(\RuntimeException::class, 'APP_KEY', static fn () => Config::fromArray($values));
 });
 
-$test->run('config: APP_DEBUG=1 is refused in production', function () use ($test, $baseConfig): void {
+$test->run('config: APP_DEBUG=1 is refused in production', function () use ($test, $productionConfig): void {
     $test->throws(
         \RuntimeException::class,
         'APP_DEBUG',
-        static fn () => Config::fromArray($baseConfig(['APP_ENV' => 'production', 'APP_DEBUG' => '1']))
+        static fn () => Config::fromArray($productionConfig(['APP_DEBUG' => '1']))
     );
 });
 
-$test->run('config: production with APP_DEBUG=0 builds', function () use ($test, $baseConfig): void {
-    $config = Config::fromArray($baseConfig(['APP_ENV' => 'production', 'APP_DEBUG' => '0']));
+$test->run('config: production with APP_DEBUG=0 builds', function () use ($test, $productionConfig): void {
+    $config = Config::fromArray($productionConfig());
 
     $test->true($config->isProduction(), 'expected production environment');
     $test->true(!$config->debug(), 'expected debug off');
@@ -455,8 +468,8 @@ $test->run('router: a local dev Origin is accepted and JSON reaches the handler'
     $test->same(['received' => ['name' => 'x']], $response->decoded()['data']);
 });
 
-$test->run('router: 500 hides detail unless APP_DEBUG=1', function () use ($test, $buildRouter, $routerConfig, $baseConfig): void {
-    $production = Config::fromArray($baseConfig(['APP_ENV' => 'production', 'APP_DEBUG' => '0']));
+$test->run('router: 500 hides detail unless APP_DEBUG=1', function () use ($test, $buildRouter, $routerConfig, $productionConfig): void {
+    $production = Config::fromArray($productionConfig());
     $hidden = $buildRouter($production)->dispatch(new Request('GET', '/api/boom'));
 
     $test->same(500, $hidden->status());

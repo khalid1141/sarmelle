@@ -43,7 +43,7 @@ final class Config
         'DB_SSL_CA' => '',
         'SESSION_NAME_CUSTOMER' => 'SARM_SESS',
         'SESSION_LIFETIME_CUSTOMER_DAYS' => '30',
-        'SESSION_SAVE_PATH' => 'server/private/var/sessions',
+        'SESSION_SAVE_PATH' => 'var/sessions',
         'ADMIN_SESSION_COOKIE' => 'SARM_ADMIN_SESSION',
         'ADMIN_DEVICE_COOKIE' => 'SARM_ADMIN_DEVICE',
         'ADMIN_PENDING_COOKIE' => 'SARM_ADMIN_PENDING',
@@ -64,10 +64,10 @@ final class Config
         'MAIL_FROM_ADDRESS' => '',
         'MAIL_FROM_NAME' => 'Sarmelle',
         'MAIL_REPLY_TO' => '',
-        'MAIL_LOG_DIR' => 'server/private/var/mail',
+        'MAIL_LOG_DIR' => 'var/mail',
         'MAIL_TIMEOUT_SECONDS' => '10',
         'MAX_JSON_BYTES' => '65536',
-        'LOG_DIR' => 'server/private/var/log',
+        'LOG_DIR' => 'var/log',
         'LOG_LEVEL' => 'warning',
         'SETUP_ALLOWED' => '0',
         'RECOVERY_ALLOWED' => '0',
@@ -155,9 +155,16 @@ final class Config
     /**
      * Public so server/bin/selftest.php can prove the web-root refusal without
      * touching a real file. Never call it from request code.
+     *
+     * The document root is read from $_SERVER unless a value is passed, so a
+     * deployment where the private tree was accidentally placed inside
+     * public_html is refused too.
      */
-    public static function assertSafeEnvPath(string $envPath, string $privateRoot): void
-    {
+    public static function assertSafeEnvPath(
+        string $envPath,
+        string $privateRoot,
+        ?string $documentRoot = null
+    ): void {
         $envPath = self::normalisePath($envPath);
         $root = self::normalisePath($privateRoot);
 
@@ -169,6 +176,22 @@ final class Config
         foreach ($webRoots as $webRoot) {
             if (self::isWithin($envPath, $webRoot)) {
                 throw new \RuntimeException('Refusing to load .env from inside a web root.');
+            }
+        }
+
+        if ($documentRoot === null) {
+            $documentRoot = isset($_SERVER['DOCUMENT_ROOT']) && is_string($_SERVER['DOCUMENT_ROOT'])
+                ? $_SERVER['DOCUMENT_ROOT']
+                : '';
+        }
+
+        $documentRoot = trim($documentRoot);
+
+        if ($documentRoot !== '') {
+            $docRoot = self::normalisePath($documentRoot);
+
+            if ($docRoot !== '' && $docRoot !== '/' && self::isWithin($envPath, $docRoot)) {
+                throw new \RuntimeException('Refusing to load .env from inside the document root.');
             }
         }
 
@@ -222,6 +245,44 @@ final class Config
         return $this->privateRoot;
     }
 
+    /**
+     * Resolves a filesystem setting against the private root.
+     *
+     * Relative values stay relative to that root, so a deployment whose private
+     * tree is called something else on disk (Hostinger uses a name such as
+     * sarmelle-private) still finds its sessions, mail logs and app logs.
+     * Older values copied from the design's repository-relative examples
+     * ("server/private/var/...") are accepted and treated the same way.
+     */
+    public function path(string $key): string
+    {
+        $value = trim($this->string($key));
+
+        if ($value === '') {
+            throw new \RuntimeException('Configuration key ' . $key . ' must be a path.');
+        }
+
+        $value = str_replace('\\', '/', $value);
+        $absolute = str_starts_with($value, '/')
+            || preg_match('#^[A-Za-z]:/#', $value) === 1;
+
+        if ($absolute) {
+            return self::normalisePath($value);
+        }
+
+        if ($this->privateRoot === '') {
+            throw new \RuntimeException(
+                'The private root is not set; cannot resolve configuration key ' . $key . '.'
+            );
+        }
+
+        if (str_starts_with($value, 'server/private/')) {
+            $value = substr($value, strlen('server/private/'));
+        }
+
+        return self::normalisePath($this->privateRoot . '/' . $value);
+    }
+
     public function string(string $key): string
     {
         if (!array_key_exists($key, $this->values)) {
@@ -267,6 +328,23 @@ final class Config
         $this->assertUrl('APP_URL');
         $this->assertUrl('ADMIN_URL');
 
+        if (in_array($this->env(), ['staging', 'production'], true)) {
+            if (!$this->bool('COOKIE_SECURE')) {
+                throw new \RuntimeException(
+                    'Refusing to start: COOKIE_SECURE must be 1 when APP_ENV is staging or production.'
+                );
+            }
+
+            foreach (['APP_URL', 'ADMIN_URL'] as $urlKey) {
+                if ($this->urlScheme($urlKey) !== 'https') {
+                    throw new \RuntimeException(
+                        'Refusing to start: ' . $urlKey
+                        . ' must use https when APP_ENV is staging or production.'
+                    );
+                }
+            }
+        }
+
         if (preg_match('/^[A-Za-z0-9._:-]+$/', $this->string('DB_HOST')) !== 1) {
             throw new \RuntimeException('DB_HOST contains unsupported characters.');
         }
@@ -302,8 +380,20 @@ final class Config
             $this->bool($booleanKey);
         }
 
+        self::assertRuntimeFlags(
+            $this->bool('SETUP_ALLOWED'),
+            $this->bool('RECOVERY_ALLOWED'),
+            PHP_SAPI
+        );
+
         if (!in_array($this->string('COOKIE_SAMESITE'), ['Lax', 'Strict', 'None'], true)) {
             throw new \RuntimeException('COOKIE_SAMESITE must be Lax, Strict or None.');
+        }
+
+        if ($this->string('COOKIE_SAMESITE') === 'None' && !$this->bool('COOKIE_SECURE')) {
+            throw new \RuntimeException(
+                'Refusing to start: COOKIE_SAMESITE=None requires COOKIE_SECURE=1.'
+            );
         }
 
         if (!in_array($this->string('PASSWORD_ALGO'), ['auto', 'argon2id', 'bcrypt'], true)) {
@@ -315,6 +405,32 @@ final class Config
         }
 
         $this->validateMail();
+
+        if ($this->isProduction() && $this->string('MAIL_TRANSPORT') === 'log') {
+            throw new \RuntimeException(
+                'Refusing to start: MAIL_TRANSPORT must not be log when APP_ENV=production.'
+            );
+        }
+    }
+
+    /**
+     * Setup and recovery switches are CLI-only. Public so selftest can prove
+     * the refusal without changing the running SAPI.
+     */
+    public static function assertRuntimeFlags(
+        bool $setupAllowed,
+        bool $recoveryAllowed,
+        string $sapi
+    ): void {
+        if (in_array($sapi, ['cli', 'phpdbg'], true)) {
+            return;
+        }
+
+        if ($setupAllowed || $recoveryAllowed) {
+            throw new \RuntimeException(
+                'Refusing to start: SETUP_ALLOWED and RECOVERY_ALLOWED are CLI-only.'
+            );
+        }
     }
 
     private function validateMail(): void
@@ -362,6 +478,13 @@ final class Config
         if (!in_array($scheme, ['http', 'https'], true) || $host === '') {
             throw new \RuntimeException($key . ' must be an absolute http(s) URL.');
         }
+    }
+
+    private function urlScheme(string $key): string
+    {
+        $parts = parse_url($this->string($key));
+
+        return is_array($parts) ? strtolower((string) ($parts['scheme'] ?? '')) : '';
     }
 
     private function assertIntRange(string $key, int $minimum, int $maximum): void
