@@ -18,6 +18,14 @@ final class Connection
     private const CONNECT_TIMEOUT_SECONDS = 5;
     private const MAX_CLOCK_SKEW_SECONDS = 2;
 
+    /**
+     * Every session runs in strict mode. Without it MySQL silently truncates
+     * oversized values and turns invalid dates into zero dates instead of
+     * failing the statement.
+     */
+    public const REQUIRED_SQL_MODE = 'STRICT_ALL_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,'
+        . 'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION';
+
     public static function open(Config $config): PDO
     {
         $dsn = sprintf(
@@ -42,22 +50,49 @@ final class Connection
             $caPath = $config->string('DB_SSL_CA');
 
             if ($caPath !== '') {
-                $options[PDO::MYSQL_ATTR_SSL_CA] = $caPath;
+                $options[self::sslCaAttribute()] = $caPath;
             }
         }
 
-        $pdo = new PDO(
-            $dsn,
-            $config->string('DB_USER'),
-            $config->string('DB_PASSWORD'),
-            $options
-        );
+        try {
+            $pdo = new PDO(
+                $dsn,
+                $config->string('DB_USER'),
+                $config->string('DB_PASSWORD'),
+                $options
+            );
+        } catch (\PDOException $exception) {
+            // Only the SQLSTATE goes to the log; the message can name the host
+            // and user, and the exception itself is not chained to the response.
+            $code = preg_replace('/[^A-Za-z0-9]/', '', (string) $exception->getCode()) ?? '';
+
+            error_log(
+                '[sarmelle] database connection failed, code ' . ($code === '' ? 'unknown' : $code)
+            );
+
+            throw new \RuntimeException('Database connection failed.');
+        }
 
         // Constants from Config are validated, and no user input is involved.
         $pdo->exec("SET time_zone = '" . Config::TIMEZONE_OFFSET . "'");
         $pdo->exec('SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci');
+        $pdo->exec("SET SESSION sql_mode = '" . self::REQUIRED_SQL_MODE . "'");
 
         return $pdo;
+    }
+
+    /**
+     * PHP 8.4 moved the MySQL attributes to Pdo\Mysql; 8.2 and 8.3 only have
+     * the PDO::MYSQL_* constants. Referencing the class with ::class does not
+     * autoload it, so this stays safe on old versions.
+     */
+    private static function sslCaAttribute(): int
+    {
+        if (class_exists(\Pdo\Mysql::class)) {
+            return \Pdo\Mysql::ATTR_SSL_CA;
+        }
+
+        return PDO::MYSQL_ATTR_SSL_CA;
     }
 
     /**
@@ -89,6 +124,31 @@ final class Connection
             throw new \RuntimeException('Connection collation is not utf8mb4_unicode_ci.');
         }
 
+        $sqlMode = (string) $pdo->query('SELECT @@session.sql_mode')->fetchColumn();
+        $activeModes = [];
+
+        foreach (explode(',', $sqlMode) as $mode) {
+            $mode = strtoupper(trim($mode));
+
+            if ($mode !== '') {
+                $activeModes[] = $mode;
+            }
+        }
+
+        $missingModes = [];
+
+        foreach (explode(',', self::REQUIRED_SQL_MODE) as $requiredMode) {
+            if (!in_array($requiredMode, $activeModes, true)) {
+                $missingModes[] = $requiredMode;
+            }
+        }
+
+        if ($missingModes !== []) {
+            throw new \RuntimeException(
+                'Session sql_mode is missing: ' . implode(', ', $missingModes) . '.'
+            );
+        }
+
         $sessionTimeZone = (string) $pdo->query('SELECT @@session.time_zone')->fetchColumn();
 
         if ($sessionTimeZone !== Config::TIMEZONE_OFFSET) {
@@ -115,6 +175,7 @@ final class Connection
         return [
             'charset' => 'utf8mb4',
             'collation' => 'utf8mb4_unicode_ci',
+            'sql_mode' => $sqlMode,
             'session_time_zone' => $sessionTimeZone,
             'php_now' => $phpNow->format('Y-m-d H:i:s'),
             'db_now' => $dbNow,

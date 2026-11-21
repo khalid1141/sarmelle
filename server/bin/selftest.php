@@ -20,6 +20,7 @@ use Sarmelle\Config\Config;
 use Sarmelle\Config\Env;
 use Sarmelle\Core\ClientIp;
 use Sarmelle\Core\Clock;
+use Sarmelle\Core\Connection;
 use Sarmelle\Core\Json;
 use Sarmelle\Core\Request;
 use Sarmelle\Core\Response;
@@ -314,17 +315,179 @@ $test->run('config: .env outside the private tree is refused', function () use (
     $test->throws(
         \RuntimeException::class,
         'private tree',
-        static fn () => Config::assertSafeEnvPath('C:/temp/.env', 'C:/repo/server/private')
+        static fn () => Config::assertSafeEnvPath('C:/temp/.env', 'C:/repo/server/private', '')
     );
 });
 
 $test->run('config: .env inside the private tree is accepted', function () use ($test): void {
     Config::assertSafeEnvPath(
         'C:/repo/server/private/config/.env',
-        'C:/repo/server/private'
+        'C:/repo/server/private',
+        ''
     );
 
     $test->true(true, 'no exception expected');
+});
+
+// --- Config hardening --------------------------------------------------------
+
+$test->run('config: staging and production need COOKIE_SECURE=1', function () use ($test, $baseConfig, $productionConfig): void {
+    foreach (['staging', 'production'] as $environment) {
+        $values = $environment === 'production'
+            ? $productionConfig(['COOKIE_SECURE' => '0'])
+            : $baseConfig([
+                'APP_ENV' => 'staging',
+                'APP_DEBUG' => '0',
+                'APP_URL' => 'https://stag.sarmelle.com',
+                'ADMIN_URL' => 'https://admin.stag.sarmelle.com',
+                'COOKIE_SECURE' => '0',
+            ]);
+
+        $test->throws(
+            \RuntimeException::class,
+            'COOKIE_SECURE',
+            static fn () => Config::fromArray($values)
+        );
+    }
+});
+
+$test->run('config: staging and production need https app and admin URLs', function () use ($test, $baseConfig, $productionConfig): void {
+    $test->throws(
+        \RuntimeException::class,
+        'APP_URL',
+        static fn () => Config::fromArray($productionConfig(['APP_URL' => 'http://sarmelle.com']))
+    );
+
+    $test->throws(
+        \RuntimeException::class,
+        'ADMIN_URL',
+        static fn () => Config::fromArray($productionConfig(['ADMIN_URL' => 'http://admin.sarmelle.com']))
+    );
+
+    $staging = Config::fromArray($baseConfig([
+        'APP_ENV' => 'staging',
+        'APP_DEBUG' => '0',
+        'APP_URL' => 'https://stag.sarmelle.com',
+        'ADMIN_URL' => 'https://admin.stag.sarmelle.com',
+        'COOKIE_SECURE' => '1',
+    ]));
+
+    $test->same('staging', $staging->env());
+});
+
+$test->run('config: production refuses the log mail transport', function () use ($test, $productionConfig): void {
+    $test->throws(
+        \RuntimeException::class,
+        'MAIL_TRANSPORT',
+        static fn () => Config::fromArray($productionConfig(['MAIL_TRANSPORT' => 'log']))
+    );
+
+    $staging = Config::fromArray($productionConfig([
+        'APP_ENV' => 'staging',
+        'APP_URL' => 'https://stag.sarmelle.com',
+        'ADMIN_URL' => 'https://admin.stag.sarmelle.com',
+        'MAIL_TRANSPORT' => 'log',
+    ]));
+
+    $test->same('log', $staging->string('MAIL_TRANSPORT'));
+});
+
+$test->run('config: SameSite=None requires a secure cookie', function () use ($test, $baseConfig): void {
+    $test->throws(
+        \RuntimeException::class,
+        'COOKIE_SAMESITE',
+        static fn () => Config::fromArray($baseConfig(['COOKIE_SAMESITE' => 'None']))
+    );
+
+    $secure = Config::fromArray($baseConfig([
+        'COOKIE_SAMESITE' => 'None',
+        'COOKIE_SECURE' => '1',
+    ]));
+
+    $test->same('None', $secure->string('COOKIE_SAMESITE'));
+});
+
+$test->run('config: setup and recovery flags are CLI-only', function () use ($test): void {
+    Config::assertRuntimeFlags(true, true, 'cli');
+    Config::assertRuntimeFlags(false, false, 'apache2handler');
+
+    $test->throws(
+        \RuntimeException::class,
+        'CLI-only',
+        static fn () => Config::assertRuntimeFlags(true, false, 'apache2handler')
+    );
+
+    $test->throws(
+        \RuntimeException::class,
+        'CLI-only',
+        static fn () => Config::assertRuntimeFlags(false, true, 'fpm-fcgi')
+    );
+});
+
+$test->run('config: .env inside the document root is refused', function () use ($test): void {
+    $previous = $_SERVER['DOCUMENT_ROOT'] ?? null;
+    $_SERVER['DOCUMENT_ROOT'] = 'C:/home/u123/public_html';
+
+    try {
+        $test->throws(
+            \RuntimeException::class,
+            'document root',
+            static fn () => Config::assertSafeEnvPath(
+                'C:/home/u123/public_html/private/config/.env',
+                'C:/home/u123/public_html/private'
+            )
+        );
+    } finally {
+        if ($previous === null) {
+            unset($_SERVER['DOCUMENT_ROOT']);
+        } else {
+            $_SERVER['DOCUMENT_ROOT'] = $previous;
+        }
+    }
+
+    $test->throws(
+        \RuntimeException::class,
+        'document root',
+        static fn () => Config::assertSafeEnvPath(
+            '/home/u/private/config/.env',
+            '/home/u/private',
+            '/home/u'
+        )
+    );
+});
+
+$test->run('config: private paths resolve against the private root', function () use ($test, $baseConfig): void {
+    $config = Config::fromArray($baseConfig(), 'C:/deploy/sarmelle-private');
+
+    $test->same('C:/deploy/sarmelle-private/var/sessions', $config->path('SESSION_SAVE_PATH'));
+    $test->same('C:/deploy/sarmelle-private/var/mail', $config->path('MAIL_LOG_DIR'));
+    $test->same('C:/deploy/sarmelle-private/var/log', $config->path('LOG_DIR'));
+
+    $legacy = Config::fromArray(
+        $baseConfig(['LOG_DIR' => 'server/private/var/log']),
+        'C:/deploy/sarmelle-private'
+    );
+    $test->same('C:/deploy/sarmelle-private/var/log', $legacy->path('LOG_DIR'));
+
+    $absolute = Config::fromArray(
+        $baseConfig(['LOG_DIR' => '/home/u/sarmelle-private/var/log']),
+        'C:/deploy/sarmelle-private'
+    );
+    $test->same('/home/u/sarmelle-private/var/log', $absolute->path('LOG_DIR'));
+
+    $windows = Config::fromArray(
+        $baseConfig(['LOG_DIR' => 'D:\\logs']),
+        'C:/deploy/sarmelle-private'
+    );
+    $test->same('D:/logs', $windows->path('LOG_DIR'));
+});
+
+$test->run('connection: the required sql_mode is the strict set', function () use ($test): void {
+    $test->same(
+        'STRICT_ALL_TABLES,NO_ZERO_DATE,NO_ZERO_IN_DATE,'
+        . 'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION',
+        Connection::REQUIRED_SQL_MODE
+    );
 });
 
 // --- Clock -------------------------------------------------------------------
