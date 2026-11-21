@@ -61,24 +61,40 @@ final class Connection
                 $config->string('DB_PASSWORD'),
                 $options
             );
+
+            // Constants from Config are validated, and no user input is involved.
+            $pdo->exec("SET time_zone = '" . Config::TIMEZONE_OFFSET . "'");
+            $pdo->exec('SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci');
+            $pdo->exec("SET SESSION sql_mode = '" . self::REQUIRED_SQL_MODE . "'");
         } catch (\PDOException $exception) {
-            // Only the SQLSTATE goes to the log; the message can name the host
-            // and user, and the exception itself is not chained to the response.
-            $code = preg_replace('/[^A-Za-z0-9]/', '', (string) $exception->getCode()) ?? '';
-
-            error_log(
-                '[sarmelle] database connection failed, code ' . ($code === '' ? 'unknown' : $code)
-            );
-
-            throw new \RuntimeException('Database connection failed.');
+            // Do not log here: ErrorHandler writes the single request-ID line.
+            // Only the sanitised SQLSTATE leaves this method; the DSN, password
+            // and previous exception are never stored or chained.
+            throw new DatabaseConnectionException(self::sanitiseSqlState($exception));
         }
 
-        // Constants from Config are validated, and no user input is involved.
-        $pdo->exec("SET time_zone = '" . Config::TIMEZONE_OFFSET . "'");
-        $pdo->exec('SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci');
-        $pdo->exec("SET SESSION sql_mode = '" . self::REQUIRED_SQL_MODE . "'");
-
         return $pdo;
+    }
+
+    /**
+     * Reduces a PDO failure to a log-safe SQLSTATE (or driver code).
+     */
+    private static function sanitiseSqlState(\PDOException $exception): string
+    {
+        $errorInfo = $exception->errorInfo ?? null;
+        $sqlState = '';
+
+        if (is_array($errorInfo) && isset($errorInfo[0]) && is_string($errorInfo[0])) {
+            $sqlState = $errorInfo[0];
+        }
+
+        if ($sqlState === '') {
+            $sqlState = (string) $exception->getCode();
+        }
+
+        $sqlState = preg_replace('/[^A-Za-z0-9]/', '', $sqlState) ?? '';
+
+        return $sqlState === '' ? 'unknown' : $sqlState;
     }
 
     /**

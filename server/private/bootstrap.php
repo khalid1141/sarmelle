@@ -29,7 +29,13 @@ set_error_handler(static function (int $severity, string $message, string $file,
         throw new \ErrorException($message, 0, $severity, $file, $line);
     }
 
-    error_log(sprintf('[sarmelle] %s in %s:%d', $message, $file, $line));
+    error_log(sprintf(
+        '[sarmelle] %s %s in %s:%d',
+        \Sarmelle\Core\RequestId::current(),
+        $message,
+        $file,
+        $line
+    ));
 
     return true;
 });
@@ -40,9 +46,11 @@ set_error_handler(static function (int $severity, string $message, string $file,
  */
 set_exception_handler(static function (\Throwable $exception): void {
     $debug = defined('SARM_DEBUG') && SARM_DEBUG === true;
+    $requestId = \Sarmelle\Core\RequestId::current();
 
     error_log(sprintf(
-        '[sarmelle] unhandled %s: %s in %s:%d',
+        '[sarmelle] %s unhandled %s: %s in %s:%d',
+        $requestId,
         $exception::class,
         $exception->getMessage(),
         $exception->getFile(),
@@ -65,6 +73,7 @@ set_exception_handler(static function (\Throwable $exception): void {
         'error' => [
             'code' => 'server_error',
             'message' => 'Something went wrong.',
+            'request_id' => $requestId,
         ],
     ];
 

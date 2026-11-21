@@ -21,6 +21,7 @@ use Sarmelle\Config\Env;
 use Sarmelle\Core\ClientIp;
 use Sarmelle\Core\Clock;
 use Sarmelle\Core\Connection;
+use Sarmelle\Core\DatabaseConnectionException;
 use Sarmelle\Core\Json;
 use Sarmelle\Core\Request;
 use Sarmelle\Core\Response;
@@ -98,6 +99,31 @@ final class Selftest
 }
 
 $test = new Selftest();
+
+/**
+ * Runs a PHP CLI process without a shell.
+ *
+ * @param array<int, string> $command
+ * @return array{0: string, 1: string, 2: int} stdout, stderr, exit code
+ */
+$runPhp = static function (array $command): array {
+    $descriptors = [
+        1 => ['pipe', 'w'],
+        2 => ['pipe', 'w'],
+    ];
+    $process = proc_open($command, $descriptors, $pipes);
+
+    if (!is_resource($process)) {
+        throw new \RuntimeException('could not start PHP');
+    }
+
+    $stdout = stream_get_contents($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+
+    return [(string) $stdout, (string) $stderr, proc_close($process)];
+};
 
 $baseConfig = static fn (array $overrides = []): array => array_merge([
     'APP_ENV' => 'local',
@@ -506,6 +532,178 @@ $test->run('connection: the required sql_mode is the strict set', function () us
         . 'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION',
         Connection::REQUIRED_SQL_MODE
     );
+});
+
+$test->run('connection: a DB failure logs exactly one line with request id and SQLSTATE', function () use ($test, $baseConfig): void {
+    $logFile = tempnam(sys_get_temp_dir(), 'sarmelle-log-');
+
+    if ($logFile === false) {
+        throw new \RuntimeException('could not create a temp log file');
+    }
+
+    $previousLog = ini_get('error_log');
+    file_put_contents($logFile, '');
+    ini_set('error_log', $logFile);
+
+    try {
+        $config = Config::fromArray($baseConfig([
+            'DB_HOST' => '127.0.0.1',
+            'DB_PORT' => '1',
+            'DB_NAME' => 'sarmelle_selftest_db',
+            'DB_USER' => 'selftest_user',
+            'DB_PASSWORD' => 'selftest-password-DO-NOT-LOG',
+        ]));
+
+        $router = new Router($config, $config->appUrl());
+        $router->add('GET', '/api/db', static function (Request $request) use ($config): Response {
+            Connection::open($config);
+
+            return Response::raw(['ok' => true]);
+        });
+
+        $response = $router->dispatch(new Request('GET', '/api/db', [], '', '', 'req_db_failure'));
+
+        $test->same(500, $response->status());
+        $test->same('server_error', $response->decoded()['error']['code']);
+        $test->true(
+            !str_contains($response->body(), 'selftest-password'),
+            'password leaked into the response'
+        );
+
+        $lines = file($logFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+
+        if (!is_array($lines)) {
+            throw new \RuntimeException('could not read the captured log');
+        }
+
+        $test->same(1, count($lines), 'expected exactly one log line');
+        $test->true(str_contains($lines[0], 'req_db_failure'), 'request id missing from the log');
+        $test->true(
+            preg_match('/sqlstate=[A-Za-z0-9]+/', $lines[0]) === 1,
+            'SQLSTATE missing from the log: ' . $lines[0]
+        );
+        $test->true(!str_contains($lines[0], 'selftest-password'), 'password leaked into the log');
+        $test->true(!str_contains($lines[0], 'mysql:host'), 'DSN leaked into the log');
+        $test->true(!str_contains($lines[0], 'sarmelle_selftest_db'), 'database name leaked into the log');
+    } finally {
+        ini_set('error_log', is_string($previousLog) ? $previousLog : '');
+        @unlink($logFile);
+    }
+});
+
+$test->run('connection: the typed failure carries only a sanitised SQLSTATE', function () use ($test, $baseConfig): void {
+    $logFile = tempnam(sys_get_temp_dir(), 'sarmelle-log-');
+
+    if ($logFile === false) {
+        throw new \RuntimeException('could not create a temp log file');
+    }
+
+    $previousLog = ini_get('error_log');
+    file_put_contents($logFile, '');
+    ini_set('error_log', $logFile);
+
+    try {
+        $config = Config::fromArray($baseConfig([
+            'DB_HOST' => '127.0.0.1',
+            'DB_PORT' => '1',
+            'DB_NAME' => 'sarmelle_selftest_db',
+            'DB_USER' => 'selftest_user',
+            'DB_PASSWORD' => 'selftest-password-DO-NOT-LOG',
+        ]));
+
+        $caught = null;
+
+        try {
+            Connection::open($config);
+        } catch (\Throwable $exception) {
+            $caught = $exception;
+        }
+
+        $test->true(
+            $caught instanceof DatabaseConnectionException,
+            'expected DatabaseConnectionException, got '
+                . ($caught === null ? 'nothing' : $caught::class)
+        );
+        $test->same('Database connection failed.', $caught->getMessage());
+        $test->same(null, $caught->getPrevious());
+        $test->true(
+            preg_match('/^[A-Za-z0-9]+$/', $caught->sqlState()) === 1,
+            'SQLSTATE is not sanitised: ' . $caught->sqlState()
+        );
+
+        $lines = file($logFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+
+        if (!is_array($lines)) {
+            throw new \RuntimeException('could not read the captured log');
+        }
+
+        $test->same(0, count($lines), 'Connection must not log directly');
+    } finally {
+        ini_set('error_log', is_string($previousLog) ? $previousLog : '');
+        @unlink($logFile);
+    }
+});
+
+$test->run('bootstrap: the not-configured path logs once and returns a request id', function () use ($test, $runPhp): void {
+    foreach (['web-storefront', 'web-admin'] as $webRoot) {
+        $temp = sys_get_temp_dir() . '/sarmelle-not-configured-' . bin2hex(random_bytes(6));
+        $apiDir = $temp . '/api';
+
+        if (!mkdir($apiDir, 0777, true) && !is_dir($apiDir)) {
+            throw new \RuntimeException('could not create a temp directory');
+        }
+
+        $entry = $apiDir . '/index.php';
+        $source = dirname(__DIR__) . '/' . $webRoot . '/api/index.php';
+
+        if (!copy($source, $entry)) {
+            throw new \RuntimeException('could not copy ' . $source);
+        }
+
+        $logFile = $temp . '/error.log';
+
+        try {
+            [$stdout, $stderr, $exitCode] = $runPhp([
+                PHP_BINARY,
+                '-d', 'display_errors=0',
+                '-d', 'log_errors=1',
+                '-d', 'error_log=' . $logFile,
+                $entry,
+            ]);
+
+            $body = json_decode(trim($stdout), true);
+
+            $test->true(is_array($body), $webRoot . ' did not return JSON: ' . $stdout . ' ' . $stderr);
+            $test->true(isset($body['error']['code']), $webRoot . ' response has no error code');
+            $test->same('server_error', $body['error']['code'], $webRoot);
+            $test->same(0, $exitCode, $webRoot . ' exit code');
+            $test->true(isset($body['error']['request_id']), $webRoot . ' request_id is missing');
+            $test->true(
+                is_string($body['error']['request_id'])
+                    && str_starts_with($body['error']['request_id'], 'req_'),
+                $webRoot . ' request_id has the wrong format'
+            );
+
+            $lines = file($logFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+
+            if (!is_array($lines)) {
+                throw new \RuntimeException('could not read the captured log');
+            }
+
+            $test->same(1, count($lines), $webRoot . ' expected exactly one log line');
+            $test->true(
+                str_contains($lines[0], $body['error']['request_id']),
+                $webRoot . ' request id missing from the log'
+            );
+            $test->true(!str_contains($lines[0], 'index.php'), $webRoot . ' file path leaked into the log');
+            $test->true(!str_contains($lines[0], 'bootstrap-path'), $webRoot . ' file contents leaked into the log');
+        } finally {
+            @unlink($entry);
+            @unlink($logFile);
+            @rmdir($apiDir);
+            @rmdir($temp);
+        }
+    }
 });
 
 // --- Clock -------------------------------------------------------------------

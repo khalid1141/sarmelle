@@ -14,31 +14,36 @@ use Sarmelle\Core\Router;
 use Sarmelle\Http\ErrorHandler;
 use Sarmelle\Http\SecurityHeaders;
 
+$requestId = 'req_' . bin2hex(random_bytes(8));
 $isAdmin = false;
 $bootstrapPathFile = __DIR__ . '/../bootstrap-path.php';
 
-$respondNotConfigured = static function (): void {
+$respondNotConfigured = static function (string $requestId): void {
+    // One line, error code only: never log file contents or the private path.
+    error_log('[sarmelle] ' . $requestId . ' server_error not_configured');
+
     http_response_code(500);
     header('Content-Type: application/json; charset=utf-8');
     header('Cache-Control: no-store');
-    echo '{"ok":false,"error":{"code":"server_error","message":"Server is not configured."}}';
+    echo '{"ok":false,"error":{"code":"server_error",'
+        . '"message":"Server is not configured.","request_id":"' . $requestId . '"}}';
 };
 
 if (!is_file($bootstrapPathFile)) {
-    $respondNotConfigured();
+    $respondNotConfigured($requestId);
     exit;
 }
 
 $privateRoot = require $bootstrapPathFile;
 
 if (!is_string($privateRoot) || trim($privateRoot) === '') {
-    $respondNotConfigured();
+    $respondNotConfigured($requestId);
     exit;
 }
 
 require rtrim(str_replace('\\', '/', $privateRoot), '/') . '/bootstrap.php';
 
-$requestId = Request::newRequestId();
+\Sarmelle\Core\RequestId::set($requestId);
 
 try {
     $config = Config::load($privateRoot);

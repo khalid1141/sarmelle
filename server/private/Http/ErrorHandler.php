@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Sarmelle\Http;
 
+use Sarmelle\Core\DatabaseConnectionException;
 use Sarmelle\Core\Response;
 
 /**
@@ -94,12 +95,13 @@ final class ErrorHandler
 
     public static function serverError(string $requestId, \Throwable $exception, bool $debug): Response
     {
-        self::log(
-            $requestId,
-            'server_error',
-            $exception::class . ': ' . $exception->getMessage()
-                . ' in ' . $exception->getFile() . ':' . $exception->getLine()
-        );
+        $detail = $exception instanceof DatabaseConnectionException
+            ? $exception::class . ': ' . $exception->getMessage()
+                . ' sqlstate=' . $exception->sqlState()
+            : $exception::class . ': ' . $exception->getMessage()
+                . ' in ' . $exception->getFile() . ':' . $exception->getLine();
+
+        self::log($requestId, 'server_error', $detail);
 
         $error = [
             'code' => 'server_error',

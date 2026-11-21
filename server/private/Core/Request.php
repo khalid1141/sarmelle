@@ -90,7 +90,7 @@ final class Request
 
     public static function newRequestId(): string
     {
-        return 'req_' . bin2hex(random_bytes(8));
+        return RequestId::generate();
     }
 
     public function method(): string
