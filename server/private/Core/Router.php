@@ -132,6 +132,7 @@ final class Router
         if ($this->local) {
             $allowed = array_merge($allowed, [
                 'http://localhost:3000',
+                'http://localhost:3001',
                 'http://localhost:8080',
                 'http://localhost:8081',
             ]);

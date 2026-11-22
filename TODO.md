@@ -42,6 +42,7 @@
 - [ ] Remove unused React default import in App.tsx; ordersSubFilter is dead state (written, never read).
 - [ ] Add real routing and product/category URLs.
 - [ ] Separate admin code from the public storefront bundle.
+- [ ] milestone 2B: add SPA fallback rule to .htaccess for non-file, non-/api URLs
 - [ ] Confirm Razorpay account activation requirements early.
 - [ ] Define modular PHP backend structure and security boundaries under `/api/`.
 - [ ] Design complete MySQL schema (`sarmelle_db` tables: products, variants, categories, customers, addresses, orders, order items, inventory movements, payments, coupons, campaigns, audit logs).
@@ -64,6 +65,8 @@
 - [ ] Order acceptance, rejection, and refund workflows.
 - [ ] Courier shipping tracking and notification adapters.
 - [ ] slice 10: prove storefront/admin route separation with real routes (storefront route on admin host and admin route on storefront host both 404)
+- [ ] slice 5+: repositories must catch PDOException and rethrow a sanitised error (messages can contain customer data)
+- [ ] slice 8: decide how admin lockout interacts with trusted-device cookies so an attacker cannot lock the owner out
 
 ## Milestone 5 — Advanced Features & Campaigns
 - [ ] Admin-managed discount coupons, seasonal campaigns (Diwali special pricing).
@@ -88,4 +91,6 @@
 - [ ] Optional: fake "waiting for payment approval" screen to mirror the real UPI flow.
 - [ ] Production DNS configuration at GoDaddy & Hostinger.
 - [ ] SSL certificate verification, final security smoke tests, and live deployment.
+- [ ] deploy: www.sarmelle.com must 301 redirect to sarmelle.com, otherwise the Origin check rejects every POST
+- [ ] deploy: force HTTPS, HSTS and a Content-Security-Policy for the admin site
 - [ ] Payment countdown must start when the customer clicks Pay, and must read the server's `payment_hold_minutes` setting.

@@ -449,6 +449,102 @@ $test->run('config: staging and production need https app and admin URLs', funct
     $test->same('staging', $staging->env());
 });
 
+$test->run('config: staging and production refuse DB_USER=root', function () use ($test, $baseConfig, $productionConfig): void {
+    $staging = $baseConfig([
+        'APP_ENV' => 'staging',
+        'APP_DEBUG' => '0',
+        'APP_URL' => 'https://stag.sarmelle.com',
+        'ADMIN_URL' => 'https://admin.stag.sarmelle.com',
+        'COOKIE_SECURE' => '1',
+        'DB_USER' => 'root',
+    ]);
+
+    foreach ([$staging, $productionConfig(['DB_USER' => 'root'])] as $values) {
+        $test->throws(
+            \RuntimeException::class,
+            'DB_USER',
+            static fn () => Config::fromArray($values)
+        );
+    }
+
+    $test->throws(
+        \RuntimeException::class,
+        'DB_USER',
+        static fn () => Config::fromArray($productionConfig(['DB_USER' => 'ROOT']))
+    );
+});
+
+$test->run('config: staging and production refuse an app or admin URL with a path, query or fragment', function () use ($test, $baseConfig, $productionConfig): void {
+    $cases = [
+        ['APP_URL', 'https://sarmelle.com/shop', 'path'],
+        ['ADMIN_URL', 'https://admin.sarmelle.com/shop', 'path'],
+        ['APP_URL', 'https://sarmelle.com?utm=1', 'query'],
+        ['ADMIN_URL', 'https://admin.sarmelle.com#top', 'fragment'],
+    ];
+
+    foreach ($cases as [$key, $url, $word]) {
+        $caught = null;
+
+        try {
+            Config::fromArray($productionConfig([$key => $url]));
+        } catch (\RuntimeException $exception) {
+            $caught = $exception;
+        }
+
+        $test->true(
+            $caught instanceof \RuntimeException,
+            $key . ' with a ' . $word . ' was not refused'
+        );
+        $test->true(str_contains($caught->getMessage(), $key), 'the refusal does not name ' . $key);
+        $test->true(
+            str_contains($caught->getMessage(), $word),
+            'the refusal does not mention the ' . $word
+        );
+    }
+
+    $staging = $baseConfig([
+        'APP_ENV' => 'staging',
+        'APP_DEBUG' => '0',
+        'APP_URL' => 'https://stag.sarmelle.com/shop',
+        'ADMIN_URL' => 'https://admin.stag.sarmelle.com',
+        'COOKIE_SECURE' => '1',
+    ]);
+
+    $test->throws(
+        \RuntimeException::class,
+        'APP_URL',
+        static fn () => Config::fromArray($staging)
+    );
+});
+
+$test->run('config: staging and production refuse the same host for app and admin URLs', function () use ($test, $baseConfig, $productionConfig): void {
+    $test->throws(
+        \RuntimeException::class,
+        'different hosts',
+        static fn () => Config::fromArray($productionConfig(['ADMIN_URL' => 'https://sarmelle.com']))
+    );
+
+    $test->throws(
+        \RuntimeException::class,
+        'different hosts',
+        static fn () => Config::fromArray($productionConfig(['ADMIN_URL' => 'https://SARMELLE.com']))
+    );
+
+    $staging = $baseConfig([
+        'APP_ENV' => 'staging',
+        'APP_DEBUG' => '0',
+        'APP_URL' => 'https://stag.sarmelle.com',
+        'ADMIN_URL' => 'https://stag.sarmelle.com',
+        'COOKIE_SECURE' => '1',
+    ]);
+
+    $test->throws(
+        \RuntimeException::class,
+        'different hosts',
+        static fn () => Config::fromArray($staging)
+    );
+});
+
 $test->run('config: production refuses the log mail transport', function () use ($test, $productionConfig): void {
     $test->throws(
         \RuntimeException::class,
@@ -845,8 +941,9 @@ $test->run('router: double slashes, encoded slashes, dot segments and encoded do
 
 // The .htaccess assertion proves the rule text only. It does not prove that
 // Apache/LiteSpeed applies the rewrite on a real host; that needs a real HTTP
-// request on staging. The dev-router test proves the local router's behaviour,
-// not the web server's.
+// request on staging. The guard-rule order check below is text-only for the
+// same reason. The dev-router test proves the local router's behaviour, not
+// the web server's.
 $test->run('router: both .htaccess files route every /api request to api/index.php', function () use ($test): void {
     foreach (['web-storefront', 'web-admin'] as $webRoot) {
         $path = dirname(__DIR__) . '/' . $webRoot . '/.htaccess';
@@ -863,6 +960,20 @@ $test->run('router: both .htaccess files route every /api request to api/index.p
                 $contents
             ) !== 1,
             $webRoot . ' still has the real-file exception for /api'
+        );
+
+        // The internal redirect guard must stop the second pass before the
+        // catch-all can rewrite api/index.php to itself again.
+        $guard = 'RewriteRule ^api/index\.php$ - [L]';
+        $catchAll = 'RewriteRule ^api(/.*)?$ api/index.php [L,QSA]';
+        $guardAt = strpos($contents, $guard);
+        $catchAllAt = strpos($contents, $catchAll);
+
+        $test->true($guardAt !== false, $webRoot . ' is missing the internal-redirect guard rule');
+        $test->true($catchAllAt !== false, $webRoot . ' is missing the /api catch-all rule');
+        $test->true(
+            $guardAt < $catchAllAt,
+            $webRoot . ' guard rule must come before the /api catch-all'
         );
     }
 });
@@ -990,6 +1101,28 @@ $test->run('router: a local dev Origin is accepted and JSON reaches the handler'
 
     $test->same(200, $response->status());
     $test->same(['received' => ['name' => 'x']], $response->decoded()['data']);
+});
+
+$test->run('router: the admin Vite origin on 3001 is allowed locally and refused otherwise', function () use ($test, $buildRouter, $routerConfig, $productionConfig): void {
+    $local = $buildRouter($routerConfig)->dispatch(new Request(
+        'POST',
+        '/api/test',
+        ['content-type' => 'application/json', 'origin' => 'http://localhost:3001'],
+        '{}'
+    ));
+
+    $test->same(200, $local->status());
+    $test->true(!isset($local->decoded()['error']), 'local 3001 origin was rejected');
+
+    $production = $buildRouter(Config::fromArray($productionConfig()))->dispatch(new Request(
+        'POST',
+        '/api/test',
+        ['content-type' => 'application/json', 'origin' => 'http://localhost:3001'],
+        '{}'
+    ));
+
+    $test->same(403, $production->status());
+    $test->same('csrf_failed', $production->decoded()['error']['code']);
 });
 
 $test->run('router: 500 hides detail unless APP_DEBUG=1', function () use ($test, $buildRouter, $routerConfig, $productionConfig): void {
@@ -1164,6 +1297,38 @@ $test->run('validator: required, type, enum, regex and length rules', function (
         isset($typeFields['age'], $typeFields['active'], $typeFields['tags']),
         'type checks did not all fail'
     );
+});
+
+$test->run('validator: min and max measure characters, integer values and array items', function () use ($test, $fieldsOf): void {
+    $text = new Validator(['code' => ['required', 'string', 'min:3', 'max:5']]);
+    $text->validate(['code' => 'abc']);
+    $text->validate(['code' => "\u{00E9}\u{00E9}\u{00E9}"]);
+    $test->same(3, mb_strlen("\u{00E9}\u{00E9}\u{00E9}", 'UTF-8'));
+
+    $short = $fieldsOf(static fn () => $text->validate(['code' => "\u{00E9}\u{00E9}"]));
+    $test->same('This field is too short.', $short['code']);
+
+    $long = $fieldsOf(static fn () => $text->validate(['code' => 'abcdef']));
+    $test->same('This field is too long.', $long['code']);
+
+    $integer = new Validator(['age' => ['required', 'int', 'min:18', 'max:120']]);
+    $integer->validate(['age' => 18]);
+    $integer->validate(['age' => 120]);
+
+    $tooYoung = $fieldsOf(static fn () => $integer->validate(['age' => 17]));
+    $test->same('This field is too short.', $tooYoung['age']);
+
+    $tooOld = $fieldsOf(static fn () => $integer->validate(['age' => 121]));
+    $test->same('This field is too long.', $tooOld['age']);
+
+    $list = new Validator(['tags' => ['required', 'array', 'min:1', 'max:3']]);
+    $list->validate(['tags' => ['a', 'b']]);
+
+    $empty = $fieldsOf(static fn () => $list->validate(['tags' => []]));
+    $test->same('This field is too short.', $empty['tags']);
+
+    $crowded = $fieldsOf(static fn () => $list->validate(['tags' => ['a', 'b', 'c', 'd']]));
+    $test->same('This field is too long.', $crowded['tags']);
 });
 
 $test->run('validator: invalid UTF-8 input is a field error, not a rule error', function () use ($test, $fieldsOf): void {

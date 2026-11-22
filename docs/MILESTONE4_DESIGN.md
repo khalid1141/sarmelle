@@ -662,7 +662,7 @@ slice to be useful. No slice installs a dependency; Composer arrives only in sli
 Files: `server/private/bootstrap.php`, `server/private/Config/Env.php`,
 `server/private/Config/Config.php`, `server/private/Core/Autoloader.php`,
 `server/web-storefront/api/index.php`, `server/web-admin/api/index.php`,
-`server/web-storefront/index.php`, `server/bin/dev-router.php`, `bootstrap-path.php`
+`server/bin/dev-router.php`, `bootstrap-path.php`
 (git-ignored), `.env.example`, `.gitignore` additions, `server/private/var/.gitignore`.
 Test: `php -l` on every file; start both `php -S` commands and get the JSON envelope from
 `/api/health` on 8080 and 8081; delete a required key and confirm a clean server error, not a

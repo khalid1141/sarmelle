@@ -154,7 +154,12 @@ final class Validator
             if (str_starts_with($rule, 'min:') || str_starts_with($rule, 'max:')) {
                 $isMin = str_starts_with($rule, 'min:');
                 $limit = (int) substr($rule, 4);
-                $length = is_string($value) ? self::charLength($value) : -1;
+                $length = match (true) {
+                    is_string($value) => self::charLength($value),
+                    is_int($value) => $value,
+                    is_array($value) => count($value),
+                    default => -1,
+                };
 
                 if (($isMin && $length < $limit) || (!$isMin && $length > $limit)) {
                     $errors[$field] = $isMin ? 'This field is too short.' : 'This field is too long.';

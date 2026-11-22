@@ -1,6 +1,6 @@
 Options -Indexes
 
-DirectoryIndex index.html index.php
+DirectoryIndex index.html
 
 <IfModule mod_rewrite.c>
     RewriteEngine On
@@ -11,6 +11,11 @@ DirectoryIndex index.html index.php
     # The front controller is an implementation detail, not a URL.
     RewriteCond %{THE_REQUEST} \s/+api/index\.php[\s?] [NC]
     RewriteRule ^api/index\.php$ - [F,L]
+
+    # The /api rewrite below maps the request onto api/index.php, and the
+    # rewritten request is processed again. Stop that second pass here so the
+    # front controller cannot be redirected to itself in a loop.
+    RewriteRule ^api/index\.php$ - [L]
 
     # Every /api and /api/* request goes to the API front controller, even if a
     # real file exists there. This matches server/bin/dev-router.php.

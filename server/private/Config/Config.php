@@ -345,6 +345,23 @@ final class Config
                     );
                 }
             }
+
+            if (strtolower(trim($this->string('DB_USER'))) === 'root') {
+                throw new \RuntimeException(
+                    'Refusing to start: DB_USER must not be root when APP_ENV is staging or production.'
+                );
+            }
+
+            foreach (['APP_URL', 'ADMIN_URL'] as $urlKey) {
+                $this->assertOriginOnly($urlKey);
+            }
+
+            if ($this->urlHost('APP_URL') === $this->urlHost('ADMIN_URL')) {
+                throw new \RuntimeException(
+                    'Refusing to start: APP_URL and ADMIN_URL must use different hosts'
+                    . ' when APP_ENV is staging or production.'
+                );
+            }
         }
 
         if (preg_match('/^[A-Za-z0-9._:-]+$/', $this->string('DB_HOST')) !== 1) {
@@ -487,6 +504,50 @@ final class Config
         $parts = parse_url($this->string($key));
 
         return is_array($parts) ? strtolower((string) ($parts['scheme'] ?? '')) : '';
+    }
+
+    /**
+     * A configured origin is scheme + host + optional port only. A path, query
+     * or fragment would make the Origin check compare against a value the
+     * browser never sends.
+     */
+    private function assertOriginOnly(string $key): void
+    {
+        $parts = parse_url($this->string($key));
+
+        if (!is_array($parts)) {
+            throw new \RuntimeException($key . ' must be an absolute http(s) URL.');
+        }
+
+        $path = (string) ($parts['path'] ?? '');
+
+        if ($path !== '' && $path !== '/') {
+            throw new \RuntimeException(
+                'Refusing to start: ' . $key
+                . ' must not contain a path when APP_ENV is staging or production.'
+            );
+        }
+
+        if (array_key_exists('query', $parts)) {
+            throw new \RuntimeException(
+                'Refusing to start: ' . $key
+                . ' must not contain a query when APP_ENV is staging or production.'
+            );
+        }
+
+        if (array_key_exists('fragment', $parts)) {
+            throw new \RuntimeException(
+                'Refusing to start: ' . $key
+                . ' must not contain a fragment when APP_ENV is staging or production.'
+            );
+        }
+    }
+
+    private function urlHost(string $key): string
+    {
+        $parts = parse_url($this->string($key));
+
+        return is_array($parts) ? strtolower((string) ($parts['host'] ?? '')) : '';
     }
 
     private function assertIntRange(string $key, int $minimum, int $maximum): void
