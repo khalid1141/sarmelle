@@ -44,11 +44,10 @@ sarmelle/                          # repository (source of truth)
       vendor/                      # Composer output (absent until slice 5)
       Config/.env                  # per-deployment secrets, never committed
     web-storefront/                # storefront web root (sarmelle.com)
-      index.php                    # serves the React build / SEO-injected pages
+      index.html, assets/          # built SPA output, uploaded at deployment
       api/index.php                # the only API entry point for the storefront
       bootstrap-path.php           # untracked; returns the absolute private path
       .htaccess                    # rewrite, deny dotfiles, security headers
-      assets/                      # built storefront output
     web-admin/                     # admin web root (admin.sarmelle.com), separate bundle
       index.html, assets/          # built admin SPA, no storefront code
       api/index.php                # the only API entry point for admin
@@ -63,6 +62,10 @@ sarmelle/                          # repository (source of truth)
   db/                              # existing schema draft (unchanged here)
   docs/
 ```
+
+The storefront root is served from the built SPA: there is no
+`server/web-storefront/index.php`. `npm run build` produces `index.html` and
+`assets/`, which are uploaded at deployment and are not committed.
 
 ### What is public and what is private
 
@@ -102,7 +105,7 @@ No XAMPP Apache, no vhosts. XAMPP is used only for MySQL/MariaDB and its PHP bin
   local dev either.
 - The dev router does two things: requests under `/api/` are handed to
   `api/index.php`; everything else falls through to the built-in server, which serves static
-  files and `index.php`/`index.html` normally.
+  files and `index.html` (or `index.php` where a web root has one) normally.
 - MariaDB stays on `127.0.0.1:3307` (the XAMPP port conflict fix from Milestone 0).
 
 ### Deployment mapping
@@ -135,7 +138,7 @@ and no `?>` closing tags in PHP-only files.
 - `.env` is authoritative for the deployment. Process environment variables are not merged,
   so a stray shell variable cannot change behaviour between web and CLI.
 - The loader refuses to serve if `.env` is present in a web root (checked by path) or if
-  `APP_DEBUG=1` while `APP_ENV=production`.
+  `APP_DEBUG=1` while `APP_ENV` is staging or production.
 - The autoloader is hand-written with `spl_autoload_register`, so slices 1 to 4 need no
   Composer.
 
@@ -146,12 +149,12 @@ Secrets are marked **S**.
 | Key | Example | Notes |
 | --- | --- | --- |
 | `APP_ENV` | `local` / `staging` / `production` | drives debug, cookie flags, health detail |
-| `APP_DEBUG` | `1` local, `0` elsewhere | never `1` in production |
+| `APP_DEBUG` | `1` local, `0` elsewhere | never `1` in staging or production |
 | `APP_URL` | `https://sarmelle.com` | storefront origin; local value is the Vite origin |
 | `ADMIN_URL` | `https://admin.sarmelle.com` | admin origin |
 | **`APP_KEY`** | 32 random bytes, base64 | **S**; HMAC for pending-login cookies and OTP codes |
 | `APP_TIMEZONE` | `Asia/Kolkata` | asserted, not trusted blindly |
-| `APP_TRUSTED_PROXIES` | empty, or proxy IPs | empty locally; see client IP in §4 |
+| `APP_TRUSTED_PROXIES` | empty, or exact proxy IPs | no CIDR; empty locally; see client IP in §4 |
 | `DB_HOST` | `127.0.0.1` | Hostinger uses `localhost` |
 | `DB_PORT` | `3307` | local MariaDB port; Hostinger uses `3306` |
 | `DB_NAME` | `sarmelle_db` | staging uses its own database |
@@ -199,12 +202,13 @@ There is deliberately no `CORS_ALLOWED_ORIGINS` and no `RATE_LIMIT_DIR`.
 ### Fixed security constants (code, not `.env`)
 
 `DATABASE.md` requires the lockout numbers to be code constants so they cannot be changed
-from the admin panel: 5 failed logins per identifier in 15 minutes → 15-minute lockout;
-20 failed logins per hour per IP → IP blocked; 3 OTP requests and 3 password-reset requests
-per account per hour. OTP length (6), OTP lifetime and pending-cookie lifetime (10 minutes),
-OTP attempt cap (5) and the minimum password length (12) are constants in
-`server/private/Auth/Policy.php`, so there is one place to read them. Changing them is a code
-change, not a config edit.
+from the admin panel: 5 failed logins per identifier in any rolling 15 minutes → the account
+is locked while at least 5 failures remain in the window (rolling window, not a fixed lock);
+20 failed logins per rolling hour per IP → the IP is blocked; 3 OTP requests and 3
+password-reset requests per account per hour. OTP length (6), OTP lifetime and pending-cookie
+lifetime (10 minutes), OTP attempt cap (5) and the minimum password length (12) are constants
+in `server/private/Auth/Policy.php`, so there is one place to read them. Changing them is a
+code change, not a config edit.
 
 ---
 
@@ -254,8 +258,10 @@ POST /api/admin/auth/otp/verify
 ...
 ```
 
-- Match on method + path; `{param}` placeholders; exact trailing-slash rule; no
-  `.php` in URLs; no routing by query string.
+- Match on method + path; `{param}` placeholders; no `.php` in URLs; no routing by query string.
+- A trailing slash is accepted: `/api/health/` is the same route as `/api/health`. Paths are
+  not otherwise normalised: `//api/health`, `/api%2Fhealth`, `/api/../api/health` and
+  percent-encoded dots do not match and return 404.
 - 404 for unknown path, 405 for known path with wrong method (with `Allow` header).
 - Middleware runs in order: request ID → JSON → size and content-type check →
   session/auth → Origin and CSRF check (unsafe methods) → auth-endpoint throttling →
@@ -313,9 +319,11 @@ The real visitor IP is needed for the per-IP lockout and for the activity log. D
 use `REMOTE_ADDR` and nothing else. If `APP_TRUSTED_PROXIES` lists one or more proxy IPs and
 the immediate peer is one of them, read `X-Forwarded-For` right to left and take the first
 address that is not a trusted proxy; ignore the header entirely for any other peer. Never
-trust `X-Forwarded-For` on a direct connection. Slice 7 verifies on staging, from a phone on
-mobile data, that the stored IP matches the phone's public address; if Hostinger terminates
-behind a proxy, its IP is added to `APP_TRUSTED_PROXIES`.
+trust `X-Forwarded-For` on a direct connection. Entries in `APP_TRUSTED_PROXIES` are exact
+IPv4/IPv6 addresses only; CIDR ranges are not supported, so every proxy IP must be listed
+exactly. Slice 7 verifies on staging, from a phone on mobile data, that the stored IP matches
+the phone's public address; if Hostinger terminates behind a proxy, its IP is added to
+`APP_TRUSTED_PROXIES`.
 
 ---
 
@@ -393,8 +401,8 @@ limit) and simply fails, so an old long password can never lock the owner out of
 
 | Concern | Store | Rule |
 | --- | --- | --- |
-| Failed logins per account | `login_attempts` (`account_type` + `identifier`) | 5 in 15 min → lock 15 min |
-| Failed logins per IP | `login_attempts.ip` | 20 in 1 hour → block |
+| Failed logins per account | `login_attempts` (`account_type` + `identifier`) | 5 in any rolling 15 min → account locked while the count stays at 5 or more (rolling window, not a fixed lock) |
+| Failed logins per IP | `login_attempts.ip` | 20 in any rolling 1 hour → block |
 | Admin OTP requests | `admin_otp_codes` rows per admin + purpose | 3 per hour |
 | Customer reset requests | `customer_password_resets` rows per customer | 3 per hour |
 
@@ -403,6 +411,12 @@ new column or table and matches "3 per hour per account". Every login attempt, s
 failure, inserts one `login_attempts` row with the identifier **as typed** (so unknown emails
 are counted too) and the IP. Only failures count toward lockouts; the window makes old rows
 expire on their own.
+
+The account rule is a rolling window, not a fixed lock. Once the fifth failure is recorded,
+the account is blocked only while at least five failures remain inside the 15-minute window.
+The block can therefore end as soon as the oldest failure ages out, even if that is less than
+15 minutes after the fifth failure. The IP rule has the same shape over one hour: the IP is
+blocked while at least 20 failures remain in the rolling 60-minute window.
 
 General, non-auth request throttling (for example a cap on product-list traffic) is **out of
 scope for this milestone and deferred**. It is not replaced by a file bucket, and no new
@@ -620,7 +634,7 @@ here, not built in this milestone.
 
 | Threat | Handling |
 | --- | --- |
-| Brute force / credential stuffing | 5 failures per account per 15 min, 20 per IP per hour, generic errors, no lockout feedback that distinguishes real accounts, Argon2id/bcrypt cost makes guessing slow |
+| Brute force / credential stuffing | 5 failures per account in any rolling 15 min (rolling window, not a fixed lock), 20 per IP in any rolling hour, generic errors, no lockout feedback that distinguishes real accounts, Argon2id/bcrypt cost makes guessing slow |
 | Session fixation | `session_regenerate_id(true)` on customer login; admin gets a brand-new random token per login, never reuses the pre-login value |
 | Session theft | `HttpOnly`, `Secure`, `SameSite=Lax`, admin tokens stored hashed, absolute + idle timeout, password change/reset/recovery revokes everything |
 | CSRF | per-session token in a header, `hash_equals`, Origin check on unsafe methods, `SameSite=Lax`, no state change on GET, no cross-origin CORS surface at all |
@@ -630,7 +644,7 @@ here, not built in this milestone.
 | Pending-login cookie forgery | HMAC-SHA256 with `APP_KEY` over admin id, code row id and expiry; tampered or expired values are rejected before lookup |
 | User enumeration | identical responses and timing for unknown accounts, forgot-password is always generic, OTP is only offered after a correct password, lockout messages are account-neutral |
 | Timing attacks | `password_verify` against a dummy hash for unknown emails, `hash_equals` for tokens and OTPs, no early return before the comparison |
-| IP spoofing | `REMOTE_ADDR` is the default; `X-Forwarded-For` is read only when the immediate peer is listed in `APP_TRUSTED_PROXIES`, and only to the right of that proxy |
+| IP spoofing | `REMOTE_ADDR` is the default; `X-Forwarded-For` is read only when the immediate peer is listed by exact IP in `APP_TRUSTED_PROXIES` (no CIDR), and only to the right of that proxy |
 | Token leakage in logs | tokens, OTPs and passwords never logged; only their presence or failure is logged; mail log is private and local-only |
 | Clickjacking / MIME sniffing | `X-Frame-Options: DENY` on admin, `nosniff`, `Referrer-Policy` |
 | Error-message leakage | fixed JSON codes, SQL and paths only in the private log, no debug output when `APP_DEBUG=0` |

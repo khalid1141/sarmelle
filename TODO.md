@@ -63,6 +63,7 @@
 - [ ] Server must reject unauthenticated order creation.
 - [ ] Order acceptance, rejection, and refund workflows.
 - [ ] Courier shipping tracking and notification adapters.
+- [ ] slice 10: prove storefront/admin route separation with real routes (storefront route on admin host and admin route on storefront host both 404)
 
 ## Milestone 5 — Advanced Features & Campaigns
 - [ ] Admin-managed discount coupons, seasonal campaigns (Diwali special pricing).
@@ -79,6 +80,7 @@
 ## Milestone 7 — Staging Deployment (`stag.sarmelle.com`)
 - [ ] Configure Hostinger staging subdomain, separate staging database, and deployment script.
 - [ ] Test backups, restoration, and rollback procedures.
+- [ ] staging: check REMOTE_ADDR behind Hostinger proxy before relying on IP limits
 
 ## Milestone 8 — Production Launch (`sarmelle.com`)
 - [ ] Razorpay UPI integration replaces the mock payment step in Milestone 8.
