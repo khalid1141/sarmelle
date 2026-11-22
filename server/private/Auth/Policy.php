@@ -11,7 +11,6 @@ final class Policy
 {
     public const LOGIN_FAILURES_PER_IDENTIFIER = 5;
     public const LOGIN_WINDOW_MINUTES = 15;
-    public const LOCKOUT_MINUTES = 15;
 
     public const LOGIN_FAILURES_PER_IP = 20;
     public const IP_WINDOW_MINUTES = 60;

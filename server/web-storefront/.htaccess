@@ -12,8 +12,8 @@ DirectoryIndex index.php index.html
     RewriteCond %{THE_REQUEST} \s/+api/index\.php[\s?] [NC]
     RewriteRule ^api/index\.php$ - [F,L]
 
-    # /api and /api/* go to the API front controller; real files stay static.
-    RewriteCond %{REQUEST_FILENAME} !-f
+    # Every /api and /api/* request goes to the API front controller, even if a
+    # real file exists there. This matches server/bin/dev-router.php.
     RewriteRule ^api(/.*)?$ api/index.php [L,QSA]
 </IfModule>
 

@@ -176,10 +176,24 @@ final class Validator
             }
 
             if (str_starts_with($rule, 'regex:')) {
-                $result = @preg_match(substr($rule, 6), is_string($value) ? $value : '');
+                $pattern = substr($rule, 6);
+                $subject = is_string($value) ? $value : '';
+
+                // A malformed rule is a code error. Compile it against an empty,
+                // valid subject first so invalid UTF-8 in the request cannot be
+                // mistaken for a broken pattern.
+                if (@preg_match($pattern, '') === false) {
+                    throw new \InvalidArgumentException('Invalid validator regex for ' . $field . '.');
+                }
+
+                $result = @preg_match($pattern, $subject);
 
                 if ($result === false) {
-                    throw new \InvalidArgumentException('Invalid validator regex for ' . $field . '.');
+                    // preg_match() fails on invalid UTF-8 input for a /u
+                    // pattern. That is client input, so it is a field error
+                    // (422), not a malformed rule definition.
+                    $errors[$field] = 'This field has an invalid format.';
+                    return null;
                 }
 
                 if ($result === 0) {

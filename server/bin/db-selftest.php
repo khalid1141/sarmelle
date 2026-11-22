@@ -72,7 +72,7 @@ $test = new DbSelftest();
 
 $prefix = 'selftest-' . bin2hex(random_bytes(6));
 $identifier = static fn (string $suffix): string => $prefix . '-' . $suffix . '@invalid.test';
-$ips = ['192.0.2.11', '192.0.2.12', '192.0.2.13', '192.0.2.14', '192.0.2.15', '192.0.2.16'];
+$ips = ['192.0.2.11', '192.0.2.12', '192.0.2.13', '192.0.2.14', '192.0.2.15', '192.0.2.16', '192.0.2.17'];
 
 $cleanup = static function (\PDO $pdo) use ($prefix): void {
     $statement = $pdo->prepare('DELETE FROM login_attempts WHERE identifier LIKE ?');
@@ -175,6 +175,60 @@ try {
         $ageRows($pdo, $ipIds, Policy::IP_WINDOW_MINUTES + 1);
         $test->same(0, $attempts->countIpFailures($ip, Policy::IP_WINDOW_MINUTES));
         $test->true(!$throttle->isIpBlocked($ip), 'old IP rows did not age out');
+    });
+
+    $test->run('the identifier lock is a rolling window, not a fixed lock', function () use ($test, $attempts, $throttle, $identifier, $ageRows, $pdo): void {
+        $account = $identifier('rolling');
+        $ip = '192.0.2.17';
+        $ids = [];
+
+        for ($index = 0; $index < Policy::LOGIN_FAILURES_PER_IDENTIFIER; $index++) {
+            $ids[] = $attempts->record('customer', $account, $ip, false);
+        }
+
+        $test->true($throttle->isIdentifierLocked('customer', $account), 'five fresh failures should lock');
+
+        // Spread the five failures across the window: the oldest is outside it,
+        // the other four are inside.
+        $ageRows($pdo, [$ids[0]], Policy::LOGIN_WINDOW_MINUTES + 1);
+        $ageRows($pdo, [$ids[1]], 14);
+        $ageRows($pdo, [$ids[2]], 13);
+        $ageRows($pdo, [$ids[3]], 12);
+        $ageRows($pdo, [$ids[4]], 11);
+
+        $test->same(
+            4,
+            $attempts->countIdentifierFailures('customer', $account, Policy::LOGIN_WINDOW_MINUTES)
+        );
+        $test->true(
+            !$throttle->isIdentifierLocked('customer', $account),
+            'four in-window failures should not lock'
+        );
+
+        // A fifth in-window failure locks again.
+        $newest = $attempts->record('customer', $account, $ip, false);
+        $test->same(
+            5,
+            $attempts->countIdentifierFailures('customer', $account, Policy::LOGIN_WINDOW_MINUTES)
+        );
+        $test->true(
+            $throttle->isIdentifierLocked('customer', $account),
+            'five in-window failures should lock'
+        );
+
+        // The lock ends as soon as the oldest in-window failure ages out, not
+        // 15 minutes after the fifth failure.
+        $ageRows($pdo, [$ids[1]], Policy::LOGIN_WINDOW_MINUTES + 1);
+        $test->same(
+            4,
+            $attempts->countIdentifierFailures('customer', $account, Policy::LOGIN_WINDOW_MINUTES)
+        );
+        $test->true(
+            !$throttle->isIdentifierLocked('customer', $account),
+            'the rolling window should have unlocked'
+        );
+        $test->same(null, $throttle->check('customer', $account, $ip), 'check() should allow the attempt');
+        $test->true($newest > 0, 'the newest failure id should be positive');
     });
 
     $test->run('the identifier is stored exactly as typed', function () use ($test, $attempts, $identifier, $pdo): void {

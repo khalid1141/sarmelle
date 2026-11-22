@@ -6,9 +6,12 @@ namespace Sarmelle\Auth;
 use Sarmelle\Repositories\LoginAttempts;
 
 /**
- * Window-based login throttling. Five failures lock an identifier for the
- * window; twenty failures block an IP for an hour. Successes are recorded but
- * never counted.
+ * Rolling-window login throttling. Five failures inside the 15-minute window
+ * lock an identifier until the count drops below five; twenty failures inside
+ * the one-hour window block an IP. Successes are recorded but never counted.
+ *
+ * This is a rolling window, not a fixed lock: the block can end as soon as the
+ * oldest failure ages out of the window.
  */
 final class Throttle
 {

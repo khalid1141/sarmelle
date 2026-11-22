@@ -242,6 +242,36 @@ $test->run('config: APP_DEBUG=1 is refused in production', function () use ($tes
     );
 });
 
+$test->run('config: APP_DEBUG=1 is refused in staging as well as production', function () use ($test, $baseConfig, $productionConfig): void {
+    $staging = $baseConfig([
+        'APP_ENV' => 'staging',
+        'APP_DEBUG' => '1',
+        'APP_URL' => 'https://stag.sarmelle.com',
+        'ADMIN_URL' => 'https://admin.stag.sarmelle.com',
+        'COOKIE_SECURE' => '1',
+    ]);
+
+    foreach ([$staging, $productionConfig(['APP_DEBUG' => '1'])] as $values) {
+        $caught = null;
+
+        try {
+            Config::fromArray($values);
+        } catch (\RuntimeException $exception) {
+            $caught = $exception;
+        }
+
+        $test->true($caught instanceof \RuntimeException, 'APP_DEBUG=1 was not refused');
+        $test->true(
+            str_contains($caught->getMessage(), 'staging'),
+            'the refusal message does not name staging'
+        );
+        $test->true(
+            str_contains($caught->getMessage(), 'production'),
+            'the refusal message does not name production'
+        );
+    }
+});
+
 $test->run('config: production with APP_DEBUG=0 builds', function () use ($test, $productionConfig): void {
     $config = Config::fromArray($productionConfig());
 
@@ -786,6 +816,121 @@ $test->run('router: unknown path is 404 with a request id and no CORS header', f
     $test->same(null, $response->header('Access-Control-Allow-Origin'));
 });
 
+$test->run('router: a trailing slash is accepted like the path without one', function () use ($test, $buildRouter, $routerConfig): void {
+    $without = $buildRouter($routerConfig)->dispatch(new Request('GET', '/api/health'));
+    $with = $buildRouter($routerConfig)->dispatch(new Request('GET', '/api/health/'));
+
+    $test->same(200, $with->status());
+    $test->same($without->status(), $with->status());
+    $test->same($without->body(), $with->body());
+});
+
+$test->run('router: double slashes, encoded slashes, dot segments and encoded dots are 404', function () use ($test, $buildRouter, $routerConfig): void {
+    $paths = [
+        '//api/health',
+        '/api%2Fhealth',
+        '/api/../api/health',
+        '/api/./health',
+        '/api/%2e%2e/api/health',
+        '/api/health%2e',
+    ];
+
+    foreach ($paths as $path) {
+        $response = $buildRouter($routerConfig)->dispatch(new Request('GET', $path));
+
+        $test->same(404, $response->status(), $path);
+        $test->same('not_found', $response->decoded()['error']['code'], $path);
+    }
+});
+
+// The .htaccess assertion proves the rule text only. It does not prove that
+// Apache/LiteSpeed applies the rewrite on a real host; that needs a real HTTP
+// request on staging. The dev-router test proves the local router's behaviour,
+// not the web server's.
+$test->run('router: both .htaccess files route every /api request to api/index.php', function () use ($test): void {
+    foreach (['web-storefront', 'web-admin'] as $webRoot) {
+        $path = dirname(__DIR__) . '/' . $webRoot . '/.htaccess';
+        $contents = file_get_contents($path);
+
+        $test->true(is_string($contents), $webRoot . ' .htaccess could not be read');
+        $test->true(
+            str_contains($contents, 'RewriteRule ^api(/.*)?$ api/index.php [L,QSA]'),
+            $webRoot . ' is missing the /api front-controller rewrite'
+        );
+        $test->true(
+            preg_match(
+                '/RewriteCond\s+%\{REQUEST_FILENAME\}\s+!-f\s*\R\s*RewriteRule\s+\^api/i',
+                $contents
+            ) !== 1,
+            $webRoot . ' still has the real-file exception for /api'
+        );
+    }
+});
+
+$test->run('router: dev-router sends real files under /api to api/index.php', function () use ($test, $runPhp): void {
+    $temp = sys_get_temp_dir() . '/sarmelle-dev-router-' . bin2hex(random_bytes(6));
+    $apiDir = $temp . '/api';
+
+    if (!mkdir($apiDir, 0777, true) && !is_dir($apiDir)) {
+        throw new \RuntimeException('could not create a temp directory');
+    }
+
+    $entry = $apiDir . '/index.php';
+    $realFile = $apiDir . '/real.txt';
+    $runner = $temp . '/runner.php';
+
+    file_put_contents($entry, '<?php echo "ROUTED:" . ($_SERVER["REQUEST_URI"] ?? "");');
+    file_put_contents($realFile, 'static');
+    file_put_contents(
+        $runner,
+        '<?php' . PHP_EOL
+        . '$_SERVER["DOCUMENT_ROOT"] = $argv[1];' . PHP_EOL
+        . '$_SERVER["REQUEST_URI"] = $argv[2];' . PHP_EOL
+        . '$result = require $argv[3];' . PHP_EOL
+        . 'echo PHP_EOL . "RESULT:" . ($result === true ? "true" : "false");' . PHP_EOL
+    );
+
+    try {
+        foreach (['/api', '/api/health/', '/api/real.txt'] as $uri) {
+            [$stdout, $stderr, $exitCode] = $runPhp([
+                PHP_BINARY,
+                $runner,
+                $temp,
+                $uri,
+                dirname(__DIR__) . '/bin/dev-router.php',
+            ]);
+
+            $test->same(0, $exitCode, $uri . ' exit code: ' . $stderr);
+            $test->true(
+                str_contains($stdout, 'ROUTED:' . $uri),
+                $uri . ' was not routed: ' . $stdout
+            );
+            $test->true(
+                str_contains($stdout, 'RESULT:true'),
+                $uri . ' did not report a handled request'
+            );
+        }
+
+        [$stdout, $stderr, $exitCode] = $runPhp([
+            PHP_BINARY,
+            $runner,
+            $temp,
+            '/not-api',
+            dirname(__DIR__) . '/bin/dev-router.php',
+        ]);
+
+        $test->same(0, $exitCode, 'non-api exit code: ' . $stderr);
+        $test->true(str_contains($stdout, 'RESULT:false'), 'a non-api path should fall through');
+        $test->true(!str_contains($stdout, 'ROUTED:'), 'a non-api path was routed to the API');
+    } finally {
+        @unlink($runner);
+        @unlink($realFile);
+        @unlink($entry);
+        @rmdir($apiDir);
+        @rmdir($temp);
+    }
+});
+
 $test->run('router: a known path with the wrong method is 405 with Allow', function () use ($test, $buildRouter, $routerConfig): void {
     $response = $buildRouter($routerConfig)->dispatch(new Request('DELETE', '/api/health'));
 
@@ -1021,6 +1166,21 @@ $test->run('validator: required, type, enum, regex and length rules', function (
     );
 });
 
+$test->run('validator: invalid UTF-8 input is a field error, not a rule error', function () use ($test, $fieldsOf): void {
+    $validator = new Validator(['name' => ['required', 'string', 'regex:/^\p{L}+$/u']]);
+    $fields = $fieldsOf(static fn () => $validator->validate(['name' => "bad\xFFutf8"]));
+
+    $test->true(isset($fields['name']), 'invalid UTF-8 was not reported as a field error');
+    $test->same('This field has an invalid format.', $fields['name']);
+
+    $test->throws(
+        \InvalidArgumentException::class,
+        'Invalid validator regex',
+        static fn () => (new Validator(['name' => ['required', 'string', 'regex:/[/u']]))
+            ->validate(['name' => 'ok'])
+    );
+});
+
 $test->run('validator: bcrypt counts bytes for the 72-byte cap', function () use ($test, $fieldsOf): void {
     $validator = new Validator(['password' => ['required', 'string', 'password:bcrypt']]);
 
@@ -1101,7 +1261,10 @@ $test->run('csrf: admin double-submit requires cookie and header to match', func
 $test->run('policy: fixed constants match the design', function () use ($test): void {
     $test->same(5, Policy::LOGIN_FAILURES_PER_IDENTIFIER);
     $test->same(15, Policy::LOGIN_WINDOW_MINUTES);
-    $test->same(15, Policy::LOCKOUT_MINUTES);
+    $test->true(
+        !defined(Policy::class . '::LOCKOUT_MINUTES'),
+        'LOCKOUT_MINUTES should be removed: the throttle is a rolling window'
+    );
     $test->same(20, Policy::LOGIN_FAILURES_PER_IP);
     $test->same(60, Policy::IP_WINDOW_MINUTES);
     $test->same(3, Policy::OTP_REQUESTS_PER_HOUR);
@@ -1149,6 +1312,27 @@ $test->run('router: a ValidationException becomes validation_failed', function (
 
     $test->same(200, $valid->status());
     $test->same('foo@bar.com', $valid->decoded()['data']['email']);
+});
+
+$test->run('router: invalid UTF-8 in a regex field is 422, not 500', function () use ($test, $buildRouter, $routerConfig): void {
+    $router = $buildRouter($routerConfig);
+    $router->add('POST', '/api/utf8', static function (Request $request): Response {
+        $values = (new Validator(['name' => ['required', 'string', 'regex:/^\p{L}+$/u']]))
+            ->validate(['name' => "bad\xFFutf8"]);
+
+        return Response::success($values);
+    });
+
+    $response = $router->dispatch(new Request(
+        'POST',
+        '/api/utf8',
+        ['content-type' => 'application/json'],
+        '{}'
+    ));
+
+    $test->same(422, $response->status());
+    $test->same('validation_failed', $response->decoded()['error']['code']);
+    $test->true(isset($response->decoded()['error']['fields']['name']), 'name field error is missing');
 });
 
 exit($test->summary());

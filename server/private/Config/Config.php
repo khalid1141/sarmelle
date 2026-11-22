@@ -316,8 +316,10 @@ final class Config
 
         $this->bool('APP_DEBUG');
 
-        if ($this->isProduction() && $this->debug()) {
-            throw new \RuntimeException('Refusing to start: APP_DEBUG must be 0 when APP_ENV=production.');
+        if (in_array($this->env(), ['staging', 'production'], true) && $this->debug()) {
+            throw new \RuntimeException(
+                'Refusing to start: APP_DEBUG must be 0 when APP_ENV is staging or production.'
+            );
         }
 
         if ($this->timezone() !== self::TIMEZONE) {
