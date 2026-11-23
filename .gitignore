@@ -17,4 +17,5 @@ server/web-storefront/bootstrap-path.php
 server/web-admin/bootstrap-path.php
 server/private/var/*
 !server/private/var/.gitignore
+server/private/vendor/
 *.eml
