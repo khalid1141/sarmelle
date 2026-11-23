@@ -28,6 +28,12 @@ use Sarmelle\Core\Response;
 use Sarmelle\Core\Router;
 use Sarmelle\Http\Csrf;
 use Sarmelle\Http\SecurityHeaders;
+use Sarmelle\Mail\EmailMessage;
+use Sarmelle\Mail\LogTransport;
+use Sarmelle\Mail\Mailer;
+use Sarmelle\Mail\MailerFactory;
+use Sarmelle\Mail\MailException;
+use Sarmelle\Mail\SmtpTransport;
 use Sarmelle\Support\Normaliser;
 use Sarmelle\Support\ValidationException;
 use Sarmelle\Support\Validator;
@@ -1498,6 +1504,248 @@ $test->run('router: invalid UTF-8 in a regex field is 422, not 500', function ()
     $test->same(422, $response->status());
     $test->same('validation_failed', $response->decoded()['error']['code']);
     $test->true(isset($response->decoded()['error']['fields']['name']), 'name field error is missing');
+});
+
+// --- Slice 5: mail ------------------------------------------------------------
+
+/**
+ * @param array<string, string> $overrides
+ * @return array<string, string>
+ */
+$smtpMailConfig = static function (array $overrides = []) use ($baseConfig): array {
+    return $baseConfig(array_merge([
+        'MAIL_TRANSPORT' => 'smtp',
+        'MAIL_HOST' => 'smtp.example.com',
+        'MAIL_PORT' => '465',
+        'MAIL_USERNAME' => 'mailer@example.com',
+        'MAIL_PASSWORD' => 'smtp-secret-DO-NOT-LOG',
+        'MAIL_ENCRYPTION' => 'ssl',
+        'MAIL_FROM_ADDRESS' => 'shop@example.com',
+        'MAIL_FROM_NAME' => 'Sarmelle',
+    ], $overrides));
+};
+
+$test->run('mail: header injection is refused in recipient, subject and From', function () use ($test, $smtpMailConfig): void {
+    $transport = new SmtpTransport(Config::fromArray($smtpMailConfig()));
+
+    $badMessages = [
+        // Recipient: CRLF and bare LF.
+        new EmailMessage("victim@example.com\r\nBcc: evil@example.com", 'Subject', 'Body', 'test'),
+        new EmailMessage("victim@example.com\nBcc: evil@example.com", 'Subject', 'Body', 'test'),
+        // Subject.
+        new EmailMessage('victim@example.com', "Hello\r\nBcc: evil@example.com", 'Body', 'test'),
+    ];
+
+    foreach ($badMessages as $bad) {
+        $caught = null;
+
+        try {
+            $transport->send($bad);
+        } catch (MailException $exception) {
+            $caught = $exception;
+        }
+
+        $test->true($caught instanceof MailException, 'header injection was accepted');
+        $test->same(MailException::INVALID_MESSAGE, $caught->category());
+        $test->true(
+            !str_contains($caught->getMessage(), 'victim@example.com'),
+            'the recipient leaked into the exception message'
+        );
+        $test->true(
+            !str_contains($caught->getMessage(), 'Bcc:'),
+            'the injected header leaked into the exception message'
+        );
+    }
+
+    // From display name: Config validates the address itself, so the name is
+    // the injectable part of From.
+    $badFrom = new SmtpTransport(Config::fromArray($smtpMailConfig([
+        'MAIL_FROM_NAME' => "Sarmelle\r\nBcc: evil@example.com",
+    ])));
+    $caught = null;
+
+    try {
+        $badFrom->send(new EmailMessage('victim@example.com', 'Subject', 'Body', 'test'));
+    } catch (MailException $exception) {
+        $caught = $exception;
+    }
+
+    $test->true($caught instanceof MailException, 'header injection in From was accepted');
+    $test->same(MailException::INVALID_MESSAGE, $caught->category());
+    $test->true(
+        !str_contains($caught->getMessage(), 'Bcc:'),
+        'the injected From header leaked into the exception message'
+    );
+});
+
+$test->run('mail: SMTP transport refuses malformed addresses without connecting', function () use ($test, $smtpMailConfig): void {
+    $transport = new SmtpTransport(Config::fromArray($smtpMailConfig()));
+
+    foreach (['', 'not-an-email', 'victim@example.com ', ' victim@example.com'] as $badAddress) {
+        $caught = null;
+
+        try {
+            $transport->send(new EmailMessage($badAddress, 'Subject', 'Body', 'test'));
+        } catch (MailException $exception) {
+            $caught = $exception;
+        }
+
+        $test->true($caught instanceof MailException, 'malformed address accepted: ' . var_export($badAddress, true));
+        $test->same(MailException::INVALID_MESSAGE, $caught->category());
+        $test->true(
+            !str_contains($caught->getMessage(), 'victim@example.com'),
+            'the recipient leaked into the exception message'
+        );
+    }
+});
+
+$test->run('mail: log transport creates its directory and writes one file per message', function () use ($test, $baseConfig): void {
+    $root = sys_get_temp_dir() . '/sarmelle-mail-' . bin2hex(random_bytes(6));
+    $mailDir = $root . '/mail';
+
+    $list = static function (string $directory): array {
+        $entries = scandir($directory);
+
+        if (!is_array($entries)) {
+            throw new \RuntimeException('could not list ' . $directory);
+        }
+
+        return array_values(array_filter(
+            $entries,
+            static fn (string $entry): bool => $entry !== '.' && $entry !== '..'
+        ));
+    };
+
+    $config = Config::fromArray($baseConfig([
+        'MAIL_TRANSPORT' => 'log',
+        'MAIL_LOG_DIR' => $mailDir,
+        'MAIL_FROM_ADDRESS' => 'shop@example.com',
+        'MAIL_FROM_NAME' => 'Sarmelle Test',
+    ]));
+    $transport = new LogTransport($config);
+
+    try {
+        $transport->send(new EmailMessage(
+            'customer@example.com',
+            'Your Sarmelle test',
+            "Line one\nLine two",
+            'test'
+        ));
+
+        $files = $list($mailDir);
+        $test->same(1, count($files), 'expected exactly one mail file');
+        $test->true(str_ends_with($files[0], '.eml'), 'mail file is not .eml style');
+
+        $contents = file_get_contents($mailDir . '/' . $files[0]);
+
+        if (!is_string($contents)) {
+            throw new \RuntimeException('could not read the mail file');
+        }
+
+        foreach ([
+            'From: Sarmelle Test <shop@example.com>',
+            'To: customer@example.com',
+            'Subject: Your Sarmelle test',
+            'X-Sarmelle-Kind: test',
+            'MIME-Version: 1.0',
+            "Line one\nLine two",
+        ] as $expected) {
+            $test->true(
+                str_contains($contents, $expected),
+                'mail file is missing: ' . $expected
+            );
+        }
+
+        $transport->send(new EmailMessage(
+            'other@example.com',
+            'Second message',
+            'Second body',
+            'admin-otp'
+        ));
+
+        $files = $list($mailDir);
+        $test->same(2, count($files), 'a second send should write a second file');
+        $test->same(2, count(array_unique($files)), 'a mail file name was overwritten');
+    } finally {
+        if (is_dir($mailDir)) {
+            foreach ($list($mailDir) as $entry) {
+                @unlink($mailDir . '/' . $entry);
+            }
+
+            @rmdir($mailDir);
+        }
+
+        @rmdir($root);
+    }
+
+    $test->true(!is_dir($root), 'the temporary mail directory was not cleaned up');
+});
+
+$test->run('mail: log transport works with no configured From address', function () use ($test, $baseConfig): void {
+    $root = sys_get_temp_dir() . '/sarmelle-mail-default-' . bin2hex(random_bytes(6));
+    $mailDir = $root . '/mail';
+
+    $config = Config::fromArray($baseConfig([
+        'MAIL_TRANSPORT' => 'log',
+        'MAIL_LOG_DIR' => $mailDir,
+        'MAIL_FROM_ADDRESS' => '',
+        'MAIL_FROM_NAME' => '',
+    ]));
+
+    try {
+        (new LogTransport($config))->send(new EmailMessage(
+            'customer@example.com',
+            'Subject',
+            'Body',
+            'test'
+        ));
+
+        $files = scandir($mailDir);
+
+        if (!is_array($files)) {
+            throw new \RuntimeException('could not list ' . $mailDir);
+        }
+
+        $files = array_values(array_filter(
+            $files,
+            static fn (string $entry): bool => $entry !== '.' && $entry !== '..'
+        ));
+        $test->same(1, count($files), 'expected exactly one mail file');
+
+        $contents = file_get_contents($mailDir . '/' . $files[0]);
+        $test->true(is_string($contents), 'could not read the mail file');
+        $test->true(
+            str_contains($contents, 'From: Sarmelle <no-reply@example.com>'),
+            'the default From header is missing'
+        );
+    } finally {
+        if (is_dir($mailDir)) {
+            foreach (scandir($mailDir) ?: [] as $entry) {
+                if ($entry !== '.' && $entry !== '..') {
+                    @unlink($mailDir . '/' . $entry);
+                }
+            }
+
+            @rmdir($mailDir);
+        }
+
+        @rmdir($root);
+    }
+});
+
+$test->run('mail: the factory picks the transport from MAIL_TRANSPORT', function () use ($test, $baseConfig, $smtpMailConfig): void {
+    $factory = new MailerFactory();
+
+    $log = $factory->create(Config::fromArray(
+        $baseConfig(['MAIL_TRANSPORT' => 'log']),
+        'C:/deploy/sarmelle-private'
+    ));
+    $smtp = $factory->create(Config::fromArray($smtpMailConfig()));
+
+    $test->true($log instanceof Mailer, 'log transport does not implement Mailer');
+    $test->true($log instanceof LogTransport, 'log transport is not a LogTransport');
+    $test->true($smtp instanceof Mailer, 'SMTP transport does not implement Mailer');
+    $test->true($smtp instanceof SmtpTransport, 'SMTP transport is not an SmtpTransport');
 });
 
 exit($test->summary());
