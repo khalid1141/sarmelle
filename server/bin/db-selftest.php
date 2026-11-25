@@ -10,10 +10,14 @@ declare(strict_types=1);
  * "@invalid.test", uses TEST-NET-1 IPs, and deletes all of its rows at the end.
  */
 
+use Sarmelle\Auth\AdminUsers;
+use Sarmelle\Auth\Password;
 use Sarmelle\Auth\Policy;
 use Sarmelle\Auth\Throttle;
 use Sarmelle\Core\Clock;
+use Sarmelle\Core\DatabaseException;
 use Sarmelle\Repositories\LoginAttempts;
+use Sarmelle\Support\ActivityLog;
 
 if (PHP_SAPI !== 'cli') {
     http_response_code(404);
@@ -55,6 +59,29 @@ final class DbSelftest
                 . ', got ' . var_export($actual, true)
             );
         }
+    }
+
+    public function throws(string $exceptionClass, string $needle, callable $callable): void
+    {
+        try {
+            $callable();
+        } catch (\Throwable $exception) {
+            if (!$exception instanceof $exceptionClass) {
+                throw new \RuntimeException(
+                    'expected ' . $exceptionClass . ', got ' . $exception::class
+                );
+            }
+
+            if ($needle !== '' && !str_contains($exception->getMessage(), $needle)) {
+                throw new \RuntimeException(
+                    'exception message does not contain "' . $needle . '": ' . $exception->getMessage()
+                );
+            }
+
+            return;
+        }
+
+        throw new \RuntimeException('expected ' . $exceptionClass . ' but nothing was thrown');
     }
 
     public function summary(): int
@@ -243,6 +270,243 @@ try {
         $test->same($typed, $row['identifier']);
         $test->same(null, $row['ip']);
     });
+
+    // --- Slice 6: admin setup, recovery and activity log ----------------------
+    //
+    // The single-owner rule means a second admin cannot be committed. These
+    // tests run inside one caller-owned transaction and are rolled back at the
+    // end, so the real admin row, sessions, devices and attempts are restored
+    // exactly as they were. The setup-creation test only runs when the table is
+    // empty; on a database that is already set up, recovery is tested on the
+    // existing owner row and rolled back.
+
+    $adminEmail = 'selftest-admin-' . bin2hex(random_bytes(6)) . '@invalid.test';
+    $setupPassword = 'Setup-Password-42';
+    $recoveredPassword = 'Recovered-Password-99';
+    $adminUserId = 0;
+    $setupHash = '';
+    $oldPassword = null;
+
+    $activityLog = new ActivityLog($pdo);
+    $adminUsers = new AdminUsers($pdo, $activityLog, 'bcrypt', 4);
+
+    $pdo->beginTransaction();
+
+    try {
+        $existingAdmins = $adminUsers->count();
+
+        if ($existingAdmins === 0) {
+            $test->run('setup creates exactly one admin with a verifiable hash and an activity row', function () use ($test, $adminUsers, $pdo, $adminEmail, $setupPassword, &$adminUserId, &$setupHash, &$oldPassword): void {
+                $adminUserId = $adminUsers->create(
+                    'Selftest Owner',
+                    $adminEmail,
+                    $setupPassword,
+                    null,
+                    false
+                );
+                $oldPassword = $setupPassword;
+
+                $test->true($adminUserId > 0, 'setup did not return an admin id');
+                $test->same(1, $adminUsers->count(), 'setup must create exactly one admin');
+
+                $admin = $adminUsers->sole();
+                $test->true(is_array($admin), 'the created admin was not found');
+                $test->same($adminEmail, $admin['email']);
+                $test->same('Selftest Owner', $admin['name']);
+                $setupHash = $admin['password_hash'];
+
+                $test->true(Password::verify($setupPassword, $setupHash), 'the stored hash does not verify');
+                $test->true($setupHash !== $setupPassword, 'the plain password was stored');
+                $test->true(!str_contains($setupHash, $setupPassword), 'the password leaked into the hash');
+
+                $statement = $pdo->prepare(
+                    'SELECT action, entity_type, entity_id, old_value, new_value FROM activity_log'
+                    . ' WHERE admin_user_id = ? AND action = ?'
+                );
+                $statement->execute([$adminUserId, AdminUsers::SETUP_ACTION]);
+                $rows = $statement->fetchAll();
+                $test->same(1, count($rows), 'setup must write exactly one activity row');
+
+                $row = $rows[0];
+                $test->same(AdminUsers::ENTITY_TYPE, $row['entity_type']);
+                $test->same($adminUserId, (int) $row['entity_id']);
+                $test->same(null, $row['old_value']);
+
+                $snapshot = (string) $row['new_value'];
+                $test->true(str_contains($snapshot, $adminEmail), 'the setup snapshot is missing the email');
+                $test->true(!str_contains($snapshot, $setupPassword), 'the setup snapshot contains the password');
+                $test->true(!str_contains($snapshot, $setupHash), 'the setup snapshot contains the hash');
+            });
+        } else {
+            $existing = $adminUsers->sole();
+
+            if (!is_array($existing)) {
+                throw new \RuntimeException('Could not read the existing admin account.');
+            }
+
+            $adminUserId = $existing['id'];
+            $adminEmail = $existing['email'];
+            $setupHash = $existing['password_hash'];
+
+            echo '[SKIP] setup creation: admin_users is not empty;'
+                . ' testing recovery on the existing owner row instead' . PHP_EOL;
+        }
+
+        $test->run('a second setup is refused and leaves exactly one admin', function () use ($test, $adminUsers, $adminUserId): void {
+            $test->throws(
+                \RuntimeException::class,
+                'already exists',
+                static fn () => $adminUsers->create(
+                    'Second Owner',
+                    'selftest-second-owner@invalid.test',
+                    'Second-Password-42',
+                    null,
+                    false
+                )
+            );
+
+            $test->same(1, $adminUsers->count(), 'the refused setup changed the admin count');
+
+            $admin = $adminUsers->sole();
+            $test->true(is_array($admin), 'the original admin disappeared');
+            $test->same($adminUserId, $admin['id']);
+        });
+
+        $test->run('recovery replaces the hash, revokes sessions/devices and clears attempts', function () use ($test, $adminUsers, $attempts, $pdo, $adminUserId, $adminEmail, $oldPassword, $recoveredPassword, $setupHash): void {
+            $tokenHash = bin2hex(random_bytes(32));
+            $expiresAt = Clock::now()->modify('+1 hour')->format('Y-m-d H:i:s');
+
+            $pdo->prepare(
+                'INSERT INTO admin_sessions (admin_user_id, session_token_hash, expires_at) VALUES (?, ?, ?)'
+            )->execute([$adminUserId, $tokenHash, $expiresAt]);
+
+            $pdo->prepare(
+                'INSERT INTO admin_trusted_devices (admin_user_id, token_hash, expires_at) VALUES (?, ?, ?)'
+            )->execute([$adminUserId, bin2hex(random_bytes(32)), $expiresAt]);
+
+            $attempts->record('admin', $adminEmail, '192.0.2.31', false);
+            $attempts->record('admin', strtoupper($adminEmail), '192.0.2.32', false);
+            $attempts->record('admin', 'selftest-other-admin@invalid.test', '192.0.2.33', false);
+            $attempts->record('customer', $adminEmail, '192.0.2.34', false);
+
+            $recoveryRowsBefore = $pdo->prepare(
+                'SELECT COUNT(*) FROM activity_log WHERE admin_user_id = ? AND action = ?'
+            );
+            $recoveryRowsBefore->execute([$adminUserId, AdminUsers::RECOVERY_ACTION]);
+            $before = (int) $recoveryRowsBefore->fetchColumn();
+
+            $counts = $adminUsers->recoverPassword($adminUserId, $recoveredPassword, null, false);
+
+            $test->same(1, $counts['sessions_revoked']);
+            $test->same(1, $counts['devices_revoked']);
+            $test->same(2, $counts['attempts_cleared']);
+
+            $sessions = $pdo->prepare('SELECT COUNT(*) FROM admin_sessions WHERE admin_user_id = ?');
+            $sessions->execute([$adminUserId]);
+            $test->same(0, (int) $sessions->fetchColumn(), 'an admin session survived recovery');
+
+            $devices = $pdo->prepare(
+                'SELECT COUNT(*) FROM admin_trusted_devices WHERE admin_user_id = ?'
+            );
+            $devices->execute([$adminUserId]);
+            $test->same(0, (int) $devices->fetchColumn(), 'a trusted device survived recovery');
+
+            $remaining = $pdo->prepare(
+                "SELECT COUNT(*) FROM login_attempts WHERE account_type = 'admin' AND LOWER(identifier) = ?"
+            );
+            $remaining->execute([$adminEmail]);
+            $test->same(0, (int) $remaining->fetchColumn(), 'an admin login attempt survived recovery');
+
+            $other = $pdo->prepare(
+                "SELECT COUNT(*) FROM login_attempts WHERE identifier = 'selftest-other-admin@invalid.test'"
+            );
+            $other->execute();
+            $test->same(1, (int) $other->fetchColumn(), 'another admin attempt was cleared');
+
+            $customer = $pdo->prepare(
+                "SELECT COUNT(*) FROM login_attempts WHERE account_type = 'customer' AND identifier = ?"
+            );
+            $customer->execute([$adminEmail]);
+            $test->same(1, (int) $customer->fetchColumn(), 'a customer attempt was cleared');
+
+            $admin = $adminUsers->sole();
+            $test->true(is_array($admin), 'the admin disappeared after recovery');
+            $test->true($admin['password_hash'] !== $setupHash, 'the hash was not replaced');
+            $test->true(Password::verify($recoveredPassword, $admin['password_hash']), 'the new hash does not verify');
+            $test->true(!str_contains($admin['password_hash'], $recoveredPassword), 'the new password leaked into the hash');
+
+            if (is_string($oldPassword)) {
+                $test->true(
+                    !Password::verify($oldPassword, $admin['password_hash']),
+                    'the old password still verifies'
+                );
+            }
+
+            $statement = $pdo->prepare(
+                'SELECT action, old_value, new_value FROM activity_log'
+                . ' WHERE admin_user_id = ? AND action = ? ORDER BY id DESC LIMIT 1'
+            );
+            $statement->execute([$adminUserId, AdminUsers::RECOVERY_ACTION]);
+            $rows = $statement->fetchAll();
+
+            $test->same(1, count($rows), 'recovery must write one activity row');
+
+            $after = $pdo->prepare(
+                'SELECT COUNT(*) FROM activity_log WHERE admin_user_id = ? AND action = ?'
+            );
+            $after->execute([$adminUserId, AdminUsers::RECOVERY_ACTION]);
+            $test->same($before + 1, (int) $after->fetchColumn(), 'recovery must add one activity row');
+
+            $snapshot = (string) $rows[0]['old_value'] . (string) $rows[0]['new_value'];
+            $test->true(!str_contains($snapshot, $recoveredPassword), 'the new password leaked into the activity log');
+            $test->true(!str_contains($snapshot, $setupHash), 'the old hash leaked into the activity log');
+            $test->true(!str_contains($snapshot, 'argon2id'), 'a hash algorithm leaked into the activity log');
+            $test->true(str_contains($snapshot, 'sessions_revoked'), 'the recovery snapshot is missing its counts');
+
+            if (is_string($oldPassword)) {
+                $test->true(!str_contains($snapshot, $oldPassword), 'the old password leaked into the activity log');
+            }
+        });
+
+        $test->run('repository PDO failures become a sanitised DatabaseException', function () use ($test, $activityLog, $adminUserId): void {
+            // new_value is TEXT (65535 bytes); a larger JSON value fails under
+            // strict mode and proves the repository does not leak SQL details.
+            $caught = null;
+
+            try {
+                $activityLog->record(
+                    $adminUserId,
+                    'admin.selftest',
+                    AdminUsers::ENTITY_TYPE,
+                    $adminUserId,
+                    null,
+                    ['blob' => str_repeat('s', 70000)]
+                );
+            } catch (DatabaseException $exception) {
+                $caught = $exception;
+            }
+
+            $test->true($caught instanceof DatabaseException, 'the PDO failure was not sanitised');
+            $test->same('Database operation failed.', $caught->getMessage());
+            $test->same(null, $caught->getPrevious());
+            $test->true(
+                preg_match('/^[A-Za-z0-9]+$/', $caught->sqlState()) === 1,
+                'the SQLSTATE is not sanitised'
+            );
+            $test->true(
+                !str_contains($caught->getMessage(), 'activity_log'),
+                'the table name leaked into the exception message'
+            );
+            $test->true(
+                !str_contains($caught->getMessage(), 'admin.selftest'),
+                'a SQL parameter leaked into the exception message'
+            );
+        });
+    } finally {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+    }
 } finally {
     $cleanup($pdo);
 }

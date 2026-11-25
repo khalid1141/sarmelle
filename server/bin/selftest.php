@@ -15,6 +15,8 @@ if (PHP_SAPI !== 'cli') {
 
 require dirname(__DIR__) . '/private/bootstrap.php';
 
+use Sarmelle\Auth\AdminUsers;
+use Sarmelle\Auth\Password;
 use Sarmelle\Auth\Policy;
 use Sarmelle\Config\Config;
 use Sarmelle\Config\Env;
@@ -22,6 +24,7 @@ use Sarmelle\Core\ClientIp;
 use Sarmelle\Core\Clock;
 use Sarmelle\Core\Connection;
 use Sarmelle\Core\DatabaseConnectionException;
+use Sarmelle\Core\DatabaseException;
 use Sarmelle\Core\Json;
 use Sarmelle\Core\Request;
 use Sarmelle\Core\Response;
@@ -1746,6 +1749,152 @@ $test->run('mail: the factory picks the transport from MAIL_TRANSPORT', function
     $test->true($log instanceof LogTransport, 'log transport is not a LogTransport');
     $test->true($smtp instanceof Mailer, 'SMTP transport does not implement Mailer');
     $test->true($smtp instanceof SmtpTransport, 'SMTP transport is not an SmtpTransport');
+});
+
+// --- Slice 6: password policy and admin guards -------------------------------
+
+$test->run('password: minimum length and unicode characters', function () use ($test): void {
+    $test->same(
+        'Password must be at least 12 characters.',
+        Password::error(str_repeat('a', 11), 'bcrypt')
+    );
+    $test->same(null, Password::error(str_repeat('a', 12), 'bcrypt'));
+    $test->same(null, Password::error(str_repeat("\u{00E9}", 12), 'bcrypt'));
+    $test->same(null, Password::error(str_repeat('a', 72), 'bcrypt'));
+
+    $test->same(
+        'Password is too long for bcrypt (72 bytes maximum).',
+        Password::error(str_repeat('a', 73), 'bcrypt')
+    );
+    $test->same(
+        'Password is too long for bcrypt (72 bytes maximum).',
+        Password::error(str_repeat("\u{00E9}", 37), 'bcrypt')
+    );
+    $test->same(null, Password::error(str_repeat("\u{00E9}", 36), 'bcrypt'));
+
+    $test->same(null, Password::error(str_repeat('a', 128), 'argon2id'));
+    $test->same(
+        'Password is too long (128 characters maximum).',
+        Password::error(str_repeat('a', 129), 'argon2id')
+    );
+    $test->same('Password is too long.', Password::error(str_repeat('a', 4097), 'argon2id'));
+    $test->same(
+        'Password must be valid text.',
+        Password::error("bad\xFFutf8-password", 'bcrypt')
+    );
+});
+
+$test->run('password: hash and verify round trip for bcrypt and argon2id', function () use ($test): void {
+    $password = 'Correct-Horse-Battery-42';
+
+    $bcrypt = Password::hash($password, 'bcrypt', 4);
+
+    $test->true(str_starts_with($bcrypt, '$2y$'), 'bcrypt hash has an unexpected prefix');
+    $test->true(!str_contains($bcrypt, $password), 'the plain password leaked into the hash');
+    $test->true(Password::verify($password, $bcrypt), 'correct bcrypt password was rejected');
+    $test->true(!Password::verify($password . 'x', $bcrypt), 'wrong bcrypt password was accepted');
+    $test->true(!Password::verify($password, 'not-a-hash'), 'malformed hash was accepted');
+    $test->true(!Password::verify($password, ''), 'empty hash was accepted');
+
+    if (!defined('PASSWORD_ARGON2ID')) {
+        return;
+    }
+
+    $argon = Password::hash($password, 'argon2id');
+
+    $test->true(str_starts_with($argon, '$argon2id$'), 'argon2id hash has an unexpected prefix');
+    $test->true(Password::verify($password, $argon), 'correct argon2id password was rejected');
+    $test->true(!Password::verify($password . 'x', $argon), 'wrong argon2id password was accepted');
+});
+
+$test->run('password: rehash detection follows algorithm and bcrypt cost', function () use ($test): void {
+    $password = 'Correct-Horse-Battery-42';
+    $bcrypt = Password::hash($password, 'bcrypt', 4);
+
+    $test->true(!Password::needsRehash($bcrypt, 'bcrypt', 4), 'matching bcrypt cost reported rehash');
+    $test->true(Password::needsRehash($bcrypt, 'bcrypt', 5), 'different bcrypt cost did not report rehash');
+    $test->true(Password::needsRehash($bcrypt, 'argon2id'), 'bcrypt hash under argon2id did not report rehash');
+    $test->true(Password::needsRehash('not-a-hash', 'bcrypt', 4), 'malformed hash did not report rehash');
+
+    if (!defined('PASSWORD_ARGON2ID')) {
+        return;
+    }
+
+    $argon = Password::hash($password, 'argon2id');
+
+    $test->true(!Password::needsRehash($argon, 'argon2id'), 'matching argon2id hash reported rehash');
+    $test->true(Password::needsRehash($argon, 'bcrypt', 4), 'argon2id hash under bcrypt did not report rehash');
+    $test->true(!Password::needsRehash(Password::hash($password), 'auto'), 'auto hash reported rehash');
+});
+
+$test->run('password: no exception message contains the submitted password', function () use ($test): void {
+    $short = 'S3cret!';
+
+    try {
+        Password::assertAcceptable($short, 'bcrypt');
+    } catch (\InvalidArgumentException $exception) {
+        $test->true(!str_contains($exception->getMessage(), $short), 'short password leaked');
+    }
+
+    $long = str_repeat('S3cret!', 12);
+
+    try {
+        Password::assertAcceptable($long, 'bcrypt');
+    } catch (\InvalidArgumentException $exception) {
+        $test->true(!str_contains($exception->getMessage(), $long), 'long password leaked');
+    }
+
+    $withNull = 'S3cret!S3cret!S3cret!' . "\0";
+
+    try {
+        Password::hash($withNull, 'bcrypt', 4);
+    } catch (\RuntimeException $exception) {
+        $test->true(!str_contains($exception->getMessage(), 'S3cret!'), 'NUL password leaked');
+        $test->same('Password could not be hashed.', $exception->getMessage());
+    }
+});
+
+$test->run('admin guards: setup and recovery are CLI-only and flag-gated', function () use ($test): void {
+    AdminUsers::assertSetupAllowed(true, 'cli');
+    AdminUsers::assertRecoveryAllowed(true, 'phpdbg');
+
+    $test->throws(
+        \RuntimeException::class,
+        'SETUP_ALLOWED',
+        static fn () => AdminUsers::assertSetupAllowed(false, 'cli')
+    );
+    $test->throws(
+        \RuntimeException::class,
+        'RECOVERY_ALLOWED',
+        static fn () => AdminUsers::assertRecoveryAllowed(false, 'cli')
+    );
+
+    foreach (['apache2handler', 'fpm-fcgi', 'cli-server'] as $sapi) {
+        $test->throws(
+            \RuntimeException::class,
+            'command line',
+            static fn () => AdminUsers::assertSetupAllowed(true, $sapi)
+        );
+        $test->throws(
+            \RuntimeException::class,
+            'command line',
+            static fn () => AdminUsers::assertRecoveryAllowed(true, $sapi)
+        );
+    }
+});
+
+$test->run('database exception: only a sanitised SQLSTATE survives', function () use ($test): void {
+    $pdoException = new \PDOException('SQLSTATE[23000]: Duplicate entry for key secret-value');
+    $pdoException->errorInfo = ['23000', 1062, 'Duplicate entry for key secret-value'];
+    $exception = DatabaseException::fromPdo($pdoException);
+
+    $test->same('Database operation failed.', $exception->getMessage());
+    $test->same('23000', $exception->sqlState());
+    $test->same(null, $exception->getPrevious());
+    $test->true(
+        !str_contains($exception->getMessage(), 'secret-value'),
+        'the SQL value leaked into the exception message'
+    );
 });
 
 exit($test->summary());
