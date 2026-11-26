@@ -6,8 +6,6 @@ import {
 } from 'lucide-react';
 import type { Product } from '../../types/product';
 import type { UserOrder, UserOrderItem, UserReturn } from '../../types/order';
-import { SAMPLE_PRODUCTS } from '../../data/products';
-
 export interface UserProfile {
   fullName: string;
   email: string;
@@ -18,6 +16,7 @@ export interface UserProfile {
 }
 
 interface AccountViewProps {
+  productsList?: Product[];
   userProfile: UserProfile;
   setUserProfile: React.Dispatch<React.SetStateAction<UserProfile>>;
   accountNotice: string | null;
@@ -40,6 +39,7 @@ export default function AccountView({
   setAccountNotice,
   accountTab,
   setAccountTab,
+  productsList = [],
   userOrders,
   userReturns,
   addToCart,
@@ -549,7 +549,7 @@ export default function AccountView({
 
                         <button
                           onClick={() => {
-                            const prod = SAMPLE_PRODUCTS.find(p => p.name === order.items[0]?.name) || SAMPLE_PRODUCTS[0];
+                            const prod = productsList.find(p => p.name === order.items[0]?.name) || productsList[0];
                             addToCart(prod);
                             setAccountNotice(`Added ${order.items[0]?.name} back to your shopping bag!`);
                             setTimeout(() => setAccountNotice(null), 3000);

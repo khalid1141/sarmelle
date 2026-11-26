@@ -6,12 +6,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ShoppingBag } from 'lucide-react';
 
-import type { Product, ProductReview } from './types/product';
-import type { HeroSlide, PromoBanner, FeaturedBlock, LookbookConfig } from './types/campaign';
-import type { UserOrderItem, UserOrder, UserReturn } from './types/order';
+import type { Product, ProductReview, HeroSlide, PromoBanner, FeaturedBlock, LookbookConfig, UserOrder, UserOrderItem, UserReturn } from './services/api';
 import type { CartItem, AppliedCoupon } from './types/cart';
 
-export type { Product, ProductReview, HeroSlide, PromoBanner, FeaturedBlock, LookbookConfig, UserOrderItem, UserOrder, UserReturn };
+export type { Product, ProductReview, HeroSlide, PromoBanner, FeaturedBlock, LookbookConfig, UserOrder, UserReturn };
 
 import SizeChartModal from './components/modals/SizeChartModal';
 import WishlistDrawer from './components/modals/WishlistDrawer';
@@ -30,14 +28,12 @@ import AccountView from './components/views/AccountView';
 import AdminView from './components/views/AdminView';
 import ReviewsModal from './components/modals/ReviewsModal';
 import ChangePasswordModal from './components/modals/ChangePasswordModal';
-import { SAMPLE_PRODUCTS } from './data/products';
-import { SAMPLE_REVIEWS } from './data/reviews';
-import { SAMPLE_HERO_SLIDES, SAMPLE_PROMO_BANNERS, SAMPLE_FEATURED_BLOCKS, DEFAULT_LOOKBOOK } from './data/campaign';
-import { SAMPLE_USER_ORDERS, SAMPLE_USER_RETURNS } from './data/orders';
-
-export { SAMPLE_PRODUCTS, SAMPLE_REVIEWS, SAMPLE_HERO_SLIDES, SAMPLE_PROMO_BANNERS, SAMPLE_FEATURED_BLOCKS, DEFAULT_LOOKBOOK, SAMPLE_USER_ORDERS, SAMPLE_USER_RETURNS };
-
-
+import {
+  fetchProducts,
+  fetchCampaign,
+  fetchAccountOrders,
+  fetchReviews,
+} from './services/api';
 export default function App() {
   const [currentView, setCurrentView] = useState<'home' | 'collection' | 'product' | 'admin' | 'account'>(() => {
     try {
@@ -73,8 +69,8 @@ export default function App() {
     }
   }, [accountTab]);
 
-  const [userOrders, setUserOrders] = useState<UserOrder[]>(SAMPLE_USER_ORDERS);
-  const [userReturns, setUserReturns] = useState<UserReturn[]>(SAMPLE_USER_RETURNS);
+  const [userOrders, setUserOrders] = useState<UserOrder[]>([]);
+  const [userReturns, setUserReturns] = useState<UserReturn[]>([]);
   const [activeTrackingOrder, setActiveTrackingOrder] = useState<UserOrder | null>(null);
   const [returnModalItem, setReturnModalItem] = useState<{ order: UserOrder; item: UserOrderItem } | null>(null);
   const [accountNotice, setAccountNotice] = useState<string | null>(null);
@@ -92,16 +88,23 @@ export default function App() {
     birthday: '14 November 1994',
     memberSince: 'October 2024'
   });
-  const [selectedProduct, setSelectedProduct] = useState<Product>(SAMPLE_PRODUCTS[0]);
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [selectedProductReviews, setSelectedProductReviews] = useState<ProductReview[]>([]);
   const [cartOpen, setCartOpen] = useState(false);
   const [wishlistOpen, setWishlistOpen] = useState(false);
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [heroSlides, setHeroSlides] = useState<HeroSlide[]>(SAMPLE_HERO_SLIDES);
-  const [promoBanners, setPromoBanners] = useState<PromoBanner[]>(SAMPLE_PROMO_BANNERS);
-  const [featuredBlocks, setFeaturedBlocks] = useState<FeaturedBlock[]>(SAMPLE_FEATURED_BLOCKS);
-  const [lookbookBanner, setLookbookBanner] = useState<LookbookConfig>(DEFAULT_LOOKBOOK);
-  const [productsList, setProductsList] = useState<Product[]>(SAMPLE_PRODUCTS);
+  const [heroSlides, setHeroSlides] = useState<HeroSlide[]>([]);
+  const [promoBanners, setPromoBanners] = useState<PromoBanner[]>([]);
+  const [featuredBlocks, setFeaturedBlocks] = useState<FeaturedBlock[]>([]);
+  const [lookbookBanner, setLookbookBanner] = useState<LookbookConfig>({
+    title: 'Diwali\\nLookbook',
+    subtitle: 'Styles for Every Celebration',
+    ctaText: 'View Lookbook',
+    image: 'https://images.unsplash.com/photo-1610030469983-98e550d6193c?auto=format&fit=crop&w=1200&q=85',
+    offerTarget: 'Diwali Sale',
+  });
+  const [productsList, setProductsList] = useState<Product[]>([]);
   const [isReviewsModalOpen, setIsReviewsModalOpen] = useState(false);
   const [isSizeChartModalOpen, setIsSizeChartModalOpen] = useState(false);
   const [selectedProductColor, setSelectedProductColor] = useState<string>('Maroon');
@@ -117,12 +120,47 @@ export default function App() {
     setActiveProductImageIdx(0);
   }, [selectedProduct?.id]);
 
+  useEffect(() => {
+    if (!selectedProduct) return;
+    let cancelled = false;
+    fetchReviews(selectedProduct.id)
+      .then((r) => { if (!cancelled) setSelectedProductReviews(r); })
+      .catch(() => { if (!cancelled) setSelectedProductReviews([]); });
+    return () => { cancelled = true; };
+  }, [selectedProduct?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [products, campaign, account] = await Promise.all([
+          fetchProducts(),
+          fetchCampaign(),
+          fetchAccountOrders(1),
+        ]);
+        if (cancelled) return;
+        setProductsList(products);
+        setHeroSlides(campaign.heroSlides);
+        setPromoBanners(campaign.promoBanners);
+        setFeaturedBlocks(campaign.featuredBlocks);
+        if (campaign.lookbook) setLookbookBanner(campaign.lookbook);
+        setUserOrders(account.orders);
+        setUserReturns(account.returns);
+        if (products.length > 0) {
+          setSelectedProduct((prev) => (prev ? prev : products[0]));
+        }
+      } catch (err) {
+        console.error('Failed to load storefront data', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Cart & Wishlist state
-  const [cart, setCart] = useState<CartItem[]>([
-    { product: SAMPLE_PRODUCTS[0], quantity: 1, selectedSize: 'Free Size', selectedColor: 'Maroon' },
-    { product: SAMPLE_PRODUCTS[2], quantity: 1, selectedSize: 'M', selectedColor: 'Rose Pink' }
-  ]);
-  const [wishlist, setWishlist] = useState<Product[]>([SAMPLE_PRODUCTS[1], SAMPLE_PRODUCTS[4]]);
+  const [cart, setCart] = useState<CartItem[]>([]);
+  const [wishlist, setWishlist] = useState<Product[]>([]);
   
   // Cart Actions
   const updateCartQuantity = (index: number, delta: number) => {
@@ -249,7 +287,7 @@ export default function App() {
     setTimeout(() => setWishlistNotice(null), 2500);
   };
 
-  const filteredProducts = SAMPLE_PRODUCTS.filter(p => {
+  const filteredProducts = productsList.filter(p => {
     if (selectedCategory !== 'All' && p.category !== selectedCategory) return false;
     if (selectedOfferType !== 'All' && p.offerType !== selectedOfferType) return false;
     if (selectedFabric !== 'All' && p.fabric !== selectedFabric) return false;
@@ -345,6 +383,7 @@ export default function App() {
       {/* ================= VIEW 2: COLLECTION PAGE ================= */}
       {currentView === 'collection' && (
         <CollectionView
+          productsList={productsList}
           selectedCategory={selectedCategory}
           setSelectedCategory={setSelectedCategory}
           selectedOfferType={selectedOfferType}
@@ -373,9 +412,9 @@ export default function App() {
       )}
 
       {/* ================= VIEW 3: PRODUCT DETAIL PAGE ================= */}
-      {currentView === 'product' && (
+      {currentView === 'product' && selectedProduct && (
         <ProductDetailView
-          selectedProduct={selectedProduct}
+          selectedProduct={selectedProduct as Product}
           selectedProductColor={selectedProductColor}
           setSelectedProductColor={setSelectedProductColor}
           selectedProductSize={selectedProductSize}
@@ -386,12 +425,14 @@ export default function App() {
           onOpenCart={() => setCartOpen(true)}
           onOpenReviews={() => setIsReviewsModalOpen(true)}
           onOpenSizeChart={() => setIsSizeChartModalOpen(true)}
+          reviews={selectedProductReviews}
         />
       )}
 
       {/* ================= VIEW 5: USER PROFILE, ORDERS & RETURNS DASHBOARD ================= */}
       {currentView === 'account' && (
         <AccountView
+          productsList={productsList}
           userProfile={userProfile}
           setUserProfile={setUserProfile}
           accountNotice={accountNotice}
@@ -513,10 +554,11 @@ export default function App() {
       />
 
       {/* ================= CUSTOMER REVIEWS MODAL POPUP ================= */}
-      <ReviewsModal 
-        isOpen={isReviewsModalOpen} 
-        onClose={() => setIsReviewsModalOpen(false)} 
-        product={selectedProduct} 
+      <ReviewsModal
+        isOpen={isReviewsModalOpen}
+        onClose={() => setIsReviewsModalOpen(false)}
+        product={selectedProduct as Product}
+        reviews={selectedProductReviews}
       />
 
       {/* ================= SIZE CHART MODAL POPUP ================= */}

@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Sparkles, Filter, ArrowUpDown, ChevronDown, Check, X, ShoppingBag, Star, Heart } from 'lucide-react';
-import { SAMPLE_PRODUCTS } from '../../data/products';
 import type { Product } from '../../types/product';
 
 interface CollectionViewProps {
@@ -18,6 +17,7 @@ interface CollectionViewProps {
   sortBy: string;
   setSortBy: (sort: string) => void;
   /* Derived in App (from the surviving filter state) */
+  productsList: Product[];
   filteredProducts: Product[];
   resetAllFilters: () => void;
   /* Load-more state — survived in App (baseline); sentinel ref + observer moved here */
@@ -47,6 +47,7 @@ export default function CollectionView({
   setMaxPrice,
   sortBy,
   setSortBy,
+  productsList,
   filteredProducts,
   resetAllFilters,
   visibleProductsCount,
@@ -176,7 +177,7 @@ export default function CollectionView({
                   <span className={selectedCategory === cat ? 'text-[#D4AF37] font-semibold' : ''}>{cat}</span>
                 </span>
                 <span className="text-[10px] text-gray-500 group-hover:text-gray-400">
-                  {cat === 'All' ? SAMPLE_PRODUCTS.length : SAMPLE_PRODUCTS.filter(p => p.category === cat).length}
+                  {cat === 'All' ? productsList.length : productsList.filter(p => p.category === cat).length}
                 </span>
               </label>
             ))}
@@ -198,7 +199,7 @@ export default function CollectionView({
                   <span className={selectedFabric === fab ? 'text-[#D4AF37] font-semibold' : ''}>{fab}</span>
                 </span>
                 <span className="text-[10px] text-gray-500 group-hover:text-gray-400">
-                  {fab === 'All' ? SAMPLE_PRODUCTS.length : SAMPLE_PRODUCTS.filter(p => p.fabric === fab).length}
+                  {fab === 'All' ? productsList.length : productsList.filter(p => p.fabric === fab).length}
                 </span>
               </label>
             ))}

@@ -15,6 +15,9 @@ final class Request
     private readonly string $remoteAddr;
     private readonly string $requestId;
 
+    /** @var array<string, mixed> */
+    private readonly array $query;
+
     /** @var array<string, string> */
     private readonly array $headers;
 
@@ -30,7 +33,8 @@ final class Request
         array $headers = [],
         string $body = '',
         string $remoteAddr = '',
-        ?string $requestId = null
+        ?string $requestId = null,
+        array $query = []
     ) {
         $normalisedHeaders = [];
 
@@ -50,6 +54,7 @@ final class Request
         $this->body = $body;
         $this->remoteAddr = $remoteAddr;
         $this->requestId = $requestId ?? self::newRequestId();
+        $this->query = $query;
     }
 
     public static function fromGlobals(int $maxBytes = 0, ?string $requestId = null): self
@@ -58,6 +63,13 @@ final class Request
         $uri = (string) ($_SERVER['REQUEST_URI'] ?? '/');
         $rawPath = parse_url($uri, PHP_URL_PATH);
         $path = is_string($rawPath) && $rawPath !== '' ? $rawPath : '/';
+
+        $rawQuery = parse_url($uri, PHP_URL_QUERY);
+        $query = [];
+
+        if (is_string($rawQuery) && $rawQuery !== '') {
+            parse_str($rawQuery, $query);
+        }
 
         $headers = [];
 
@@ -84,7 +96,8 @@ final class Request
             $headers,
             is_string($body) ? $body : '',
             (string) ($_SERVER['REMOTE_ADDR'] ?? ''),
-            $requestId
+            $requestId,
+            $query
         );
     }
 
@@ -101,6 +114,22 @@ final class Request
     public function path(): string
     {
         return $this->path;
+    }
+
+    /**
+     * @return mixed
+     */
+    public function query(string $key, mixed $default = null): mixed
+    {
+        return $this->query[$key] ?? $default;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function allQuery(): array
+    {
+        return $this->query;
     }
 
     public function header(string $name): ?string

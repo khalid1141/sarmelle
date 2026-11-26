@@ -1,7 +1,6 @@
 import React from 'react';
 import { Star, X, ShieldCheck } from 'lucide-react';
 import type { Product, ProductReview } from '../../types/product';
-import { SAMPLE_REVIEWS } from '../../data/reviews';
 
 interface ReviewsModalProps {
   isOpen: boolean;
@@ -14,7 +13,7 @@ export default function ReviewsModal({
   isOpen,
   onClose,
   product,
-  reviews = SAMPLE_REVIEWS
+  reviews = []
 }: ReviewsModalProps) {
   if (!isOpen) return null;
 

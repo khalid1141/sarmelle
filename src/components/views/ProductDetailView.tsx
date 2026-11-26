@@ -3,8 +3,7 @@ import {
   Star, Sparkles, Check, ShieldCheck, RotateCcw, 
   ChevronDown, Tag, Gem, ArrowRight 
 } from 'lucide-react';
-import type { Product } from '../../types/product';
-import { SAMPLE_REVIEWS } from '../../data/reviews';
+import type { Product, ProductReview } from '../../types/product';
 
 interface ProductDetailViewProps {
   selectedProduct: Product;
@@ -18,6 +17,7 @@ interface ProductDetailViewProps {
   onOpenCart: () => void;
   onOpenReviews: () => void;
   onOpenSizeChart: () => void;
+  reviews?: ProductReview[];
 }
 
 export default function ProductDetailView({
@@ -32,6 +32,7 @@ export default function ProductDetailView({
   onOpenCart,
   onOpenReviews,
   onOpenSizeChart,
+  reviews = [],
 }: ProductDetailViewProps) {
   const [expandedAccordion, setExpandedAccordion] = useState<string | null>('description');
   const mobTouchStartX = useRef<number | null>(null);
@@ -379,7 +380,7 @@ export default function ProductDetailView({
 
         {/* Top 3 Reviews Cards Inline Preview */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-          {SAMPLE_REVIEWS.slice(0, 3).map((rev) => (
+          {reviews.slice(0, 3).map((rev) => (
             <div key={rev.id} className="bg-[#121212] border border-[#D4AF37]/20 p-5 rounded-xl space-y-3 shadow-lg flex flex-col justify-between">
               <div className="space-y-2">
                 <div className="flex justify-between items-center">
