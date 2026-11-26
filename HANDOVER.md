@@ -48,3 +48,13 @@
 4. **Routing & URLs:** Implement real client routing with clean product/category URLs.
 5. **Admin isolation:** Separate admin CMS code from public customer-facing storefront bundle.
 6. **Payment gateway setup:** Confirm Razorpay business account activation and KYC requirements early.
+
+---
+
+## Auth implementation (Milestone 4, documented design)
+Implemented PHP-session customer auth and DB-backed admin auth per `docs/MILESTONE4_DESIGN.md`:
+- Customer: register, login, logout, me, csrf, forgot/reset/change password (`server/web-storefront/api/index.php`)
+- Admin: login (with OTP for new devices), otp/verify, otp/resend, logout, me, forgot/reset/change password (`server/web-admin/api/index.php`)
+- Repositories: `Customers`, `CustomerPasswordResets`, `AdminSessions`, `AdminOtpCodes`, `AdminTrustedDevices`
+- Pending-login cookie signed with HMAC; trusted devices skip OTP; idle (30m) + absolute (12h) admin session timeouts
+- Endpoints verified end-to-end on local dev servers (8080 / 8081)
