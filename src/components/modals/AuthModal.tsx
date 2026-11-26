@@ -1,12 +1,7 @@
 import React, { useState } from 'react';
 import { X, ArrowLeft, CheckCircle2 } from 'lucide-react';
 
-// MOCK ONLY - remove in Milestone 4 (real login)
-const DEMO_ACCOUNT = {
-  email: 'priya@example.com',
-  phone: '9876543210',
-  password: 'Priya@123'
-};
+const API = '/api';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -87,24 +82,27 @@ export default function AuthModal({
         {/* Form Fields: Login */}
         {authMode === 'login' && (
           <form
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
               const identifier = loginIdentifier.trim();
-              const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(identifier);
-              const isPhone = /^[6-9]\d{9}$/.test(identifier);
-              if (!isEmail && !isPhone) {
-                setLoginError('Enter a valid email address or 10-digit mobile number.');
-                return;
-              }
-              const identifierMatches = isEmail
-                ? identifier.toLowerCase() === DEMO_ACCOUNT.email.toLowerCase()
-                : identifier === DEMO_ACCOUNT.phone;
-              if (!identifierMatches || loginPassword !== DEMO_ACCOUNT.password) {
-                setLoginError('Incorrect email/phone or password');
-                return;
-              }
               setLoginError('');
-              onAuthenticated();
+              try {
+                const res = await fetch(`${API}/auth/login`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  credentials: 'include',
+                  body: JSON.stringify({ identifier, password: loginPassword }),
+                });
+                const data = await res.json();
+                if (!res.ok || !data?.ok) {
+                  setLoginError(data?.error?.message || 'Incorrect email/phone or password');
+                  return;
+                }
+                onAuthenticated();
+                onClose();
+              } catch {
+                setLoginError('Network error. Please try again.');
+              }
             }}
             className="space-y-4"
           >
@@ -173,9 +171,30 @@ export default function AuthModal({
         {/* Form Fields: Register */}
         {authMode === 'register' && (
           <form
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
-              onAuthenticated();
+              const form = e.currentTarget;
+              const name = (form.querySelector('input[placeholder="e.g. Priya Sharma"]') as HTMLInputElement)?.value || '';
+              const email = (form.querySelector('input[type="email"]') as HTMLInputElement)?.value || '';
+              const phone = (form.querySelector('input[type="tel"]') as HTMLInputElement)?.value || '';
+              const password = (form.querySelector('input[type="password"]') as HTMLInputElement)?.value || '';
+              try {
+                const res = await fetch(`${API}/auth/register`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  credentials: 'include',
+                  body: JSON.stringify({ name, email, phone, password }),
+                });
+                const data = await res.json();
+                if (!res.ok || !data?.ok) {
+                  alert(data?.error?.message || 'Registration failed');
+                  return;
+                }
+                onAuthenticated();
+                onClose();
+              } catch {
+                alert('Network error');
+              }
             }}
             className="space-y-3.5"
           >
@@ -271,8 +290,18 @@ export default function AuthModal({
               </div>
             ) : (
               <form
-                onSubmit={(e) => {
+                onSubmit={async (e) => {
                   e.preventDefault();
+                  try {
+                    await fetch(`${API}/auth/forgot-password`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      credentials: 'include',
+                      body: JSON.stringify({ email: forgotPasswordEmail }),
+                    });
+                  } catch {
+                    // ignore
+                  }
                   setForgotPasswordSent(true);
                 }}
                 className="space-y-4"
