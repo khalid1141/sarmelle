@@ -87,6 +87,7 @@ export default function HomeView({
     <main>
       {(() => {
         const activeSlide = heroSlides[currentHeroSlide] || heroSlides[0];
+        if (!activeSlide) return null;
         const handleHeroCta = (slide: HeroSlide) => {
           onNavCategoryOffer(slide.categoryTarget, slide.offerTarget);
         };

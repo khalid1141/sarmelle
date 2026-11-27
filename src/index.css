@@ -3,7 +3,7 @@
 /* Global cursor and text selection hygiene: no accidental I-beam editing cursors on UI elements */
 *, *::before, *::after {
   user-select: none;
-  cursor: default;
+  cursor: pointer;
 }
 
 input, textarea, [contenteditable="true"] {
@@ -11,7 +11,7 @@ input, textarea, [contenteditable="true"] {
   cursor: text !important;
 }
 
-button, a, [role="button"], select, summary, .cursor-pointer {
+button, a, [role="button"], [role="link"], select, summary, .cursor-pointer, [onclick] {
   cursor: pointer !important;
 }
 

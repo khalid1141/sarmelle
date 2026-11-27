@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { downloadInvoicePdf } from '../../utils/invoice';
 import { 
   User, Package, CheckCircle2, X, Edit3, KeyRound, MapPin, 
   ShieldCheck, Truck, RotateCcw, AlertCircle, ArrowRight, 
@@ -533,15 +534,7 @@ export default function AccountView({
                     <div className="bg-[#141414] border-t border-gray-800 px-4 sm:px-6 py-3 flex flex-wrap items-center justify-end gap-3 text-xs">
                       <div className="flex items-center gap-3">
                         <button
-                          onClick={() => {
-                            const receipt = `SARMELLE OFFICIAL INVOICE\nOrder No: ${order.orderNumber}\nDate: ${order.date}\nCustomer: ${userProfile.fullName}\nTotal Amount: INR ${order.totalAmount}\nStatus: ${matchingReturn ? matchingReturn.type + ' Initiated' : order.status}\nCourier: ${order.carrier} (${order.trackingNumber})\nThank you for choosing Sarmelle.`;
-                            const blob = new Blob([receipt], { type: 'text/plain' });
-                            const url = URL.createObjectURL(blob);
-                            const a = document.createElement('a');
-                            a.href = url;
-                            a.download = `Invoice-${order.orderNumber}.txt`;
-                            a.click();
-                          }}
+                          onClick={() => downloadInvoicePdf(order, { fullName: userProfile.fullName, email: userProfile.email })}
                           className="text-gray-300 hover:text-white flex items-center gap-1.5 cursor-pointer transition-colors"
                         >
                           <Download className="w-3.5 h-3.5" /> Download Invoice

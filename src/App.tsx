@@ -140,9 +140,9 @@ export default function App() {
         ]);
         if (cancelled) return;
         setProductsList(products);
-        setHeroSlides(campaign.heroSlides);
-        setPromoBanners(campaign.promoBanners);
-        setFeaturedBlocks(campaign.featuredBlocks);
+        setHeroSlides(campaign.heroSlides ?? []);
+        setPromoBanners(campaign.promoBanners ?? []);
+        setFeaturedBlocks(campaign.featuredBlocks ?? []);
         if (campaign.lookbook) setLookbookBanner(campaign.lookbook);
         setUserOrders(account.orders);
         setUserReturns(account.returns);
