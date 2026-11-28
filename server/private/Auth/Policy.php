@@ -23,6 +23,10 @@ final class Policy
     public const PENDING_COOKIE_LIFETIME_MINUTES = 10;
     public const OTP_MAX_ATTEMPTS = 5;
 
+    public const ADMIN_SESSION_IDLE_MINUTES = 30;
+    public const ADMIN_SESSION_ABSOLUTE_HOURS = 12;
+    public const CUSTOMER_SESSION_LIFETIME_DAYS = 30;
+
     public const PASSWORD_MIN_LENGTH = 12;
     public const PASSWORD_BCRYPT_MAX_BYTES = 72;
     public const PASSWORD_ARGON2ID_MAX_CHARS = 128;

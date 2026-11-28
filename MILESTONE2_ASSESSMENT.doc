@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+<head>
+<meta charset='utf-8'>
+<title>Milestone 2 Step 1 Assessment - Sarmelle</title>
+<!--[if gte mso 9]>
+<xml>
+ <w:WordDocument>
+  <w:View>Print</w:View>
+  <w:Zoom>100</w:Zoom>
+  <w:DoNotOptimizeForBrowser/>
+ </w:WordDocument>
+</xml>
+<![endif]-->
+<style>
+  @page {
+    size: A4;
+    margin: 1.0in 1.0in 1.0in 1.0in;
+    mso-header-margin: 0.5in;
+    mso-footer-margin: 0.5in;
+  }
+  body {
+    font-family: 'Segoe UI', Calibri, Arial, sans-serif;
+    font-size: 11pt;
+    line-height: 1.6;
+    color: #1a1a1a;
+  }
+  h1 {
+    font-family: 'Georgia', serif;
+    font-size: 24pt;
+    color: #1a1a1a;
+    border-bottom: 2px solid #D4AF37;
+    padding-bottom: 8px;
+    margin-top: 0;
+  }
+  h2 {
+    font-family: 'Georgia', serif;
+    font-size: 16pt;
+    color: #7A1C28;
+    border-bottom: 1px solid #e0e0e0;
+    padding-bottom: 4px;
+    margin-top: 24px;
+    margin-bottom: 12px;
+  }
+  h3 {
+    font-size: 13pt;
+    color: #2c3e50;
+    margin-top: 16px;
+    margin-bottom: 8px;
+  }
+  h4 {
+    font-size: 11pt;
+    color: #555;
+    margin-top: 12px;
+    margin-bottom: 6px;
+  }
+  p, li {
+    font-size: 10.5pt;
+    margin-bottom: 6px;
+  }
+  ul {
+    margin-top: 4px;
+    margin-bottom: 12px;
+    padding-left: 24px;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+    font-size: 10pt;
+  }
+  th, td {
+    border: 1px solid #dcdcdc;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    background-color: #f7f5f0;
+    font-weight: bold;
+    color: #333;
+    border-bottom: 2px solid #D4AF37;
+  }
+  tr:nth-child(even) {
+    background-color: #fafafa;
+  }
+  code {
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 9.5pt;
+    background-color: #f4f4f4;
+    padding: 2px 5px;
+    border-radius: 3px;
+    border: 1px solid #e0e0e0;
+    color: #c7254e;
+  }
+  pre {
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 9.5pt;
+    background-color: #f8f8f8;
+    padding: 12px;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    overflow-x: auto;
+    line-height: 1.4;
+  }
+  pre code {
+    background-color: transparent;
+    padding: 0;
+    border: none;
+    color: #333;
+  }
+  hr {
+    border: none;
+    border-top: 1px solid #e0e0e0;
+    margin: 24px 0;
+  }
+  .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 9pt;
+    background: #eef2f7;
+    color: #1e3a8a;
+  }
+</style>
+</head>
+<body>
+
+<h1>Read-Only Plan for Splitting <code>App.tsx</code> (Milestone 2, Step 1)</h1>
+<hr/>
+<h2>1. Build Check</h2>
+<h3>Build Status & Dependencies</h3>
+<ul><li><b><code>node_modules</code> Status:</b> Missing. The directory <code>node_modules</code> does not exist in the project repository.</li></ul>
+<ul><li><b><code>npm run build</code> Execution:</b> Not executed. Following the strict instruction (<i>"Do NOT run npm install without asking me first. If node_modules is missing, stop and ask. You MAY run npm run build if dependencies are already installed"</i>), <code>npm install</code> was <b>not</b> run. Because dependencies (<code>vite</code>, <code>react</code>, <code>@tailwindcss/vite</code>, etc.) are not yet installed locally, <code>npm run build</code> cannot run without first installing packages.</li></ul>
+<ul><li><b>Stop & Question for You:</b> Would you like permission granted to run <code>npm install</code> (or <code>npm ci</code>) so dependencies can be installed and an initial production baseline build can be produced?</li></ul>
+<h3>Lockfile Status</h3>
+<ul><li><b><code>package-lock.json</code>:</b> <b>Not present and not committed.</b> There is no <code>package-lock.json</code> or <code>bun.lock</code>/<code>bun.lockb</code> anywhere in the repository or git history.</li></ul>
+<h3>Output Folder & Git-Ignore</h3>
+<ul><li>Default output folder configured by Vite is <code>dist/</code>.</li></ul>
+<ul><li><code>.gitignore</code> (line 3) explicitly contains <code>dist/</code>, so all build artifacts will remain properly git-ignored.</li></ul>
+<h3><code>vite.config.ts</code> Analysis for Plain Apache Hosting</h3>
+<ul><li><b>Base Path:</b> <code>base</code> is not explicitly declared in <code>vite.config.ts</code>, which causes Vite to default to absolute root (<code>/</code>). If hosted inside an Apache subdirectory (e.g. <code>http://localhost/sarmelle/</code> or <code>/var/www/html/sarmelle/</code>), script and stylesheet assets linked as <code>/assets/...</code> will fail with 404 HTTP errors. When we configure the build for Apache, setting <code>base: './'</code> or <code>base: '/sarmelle/'</code> will be necessary.</li></ul>
+<ul><li><b>Path Aliases:</b> Lines 10–12 configure <code>'@': path.resolve(__dirname, '.')</code> (repo root), <b>not</b> <code>./src</code>. Any relative import refactoring must respect this or adjust it intentionally.</li></ul>
+<ul><li><b>AI Studio Settings:</b> Lines 14–20 specify dev-server HMR switches based on <code>process.env.DISABLE_HMR</code>. This is dev-server specific and does not block production static file builds.</li></ul>
+<ul><li><b>Unused Dependencies in <code>package.json</code>:</b></li></ul>
+<p>  * <code>@google/genai</code> (^2.4.0) is declared in <code>package.json</code>, but searching all files in <code>src/</code> confirms <b>it is never imported or used</b>.</p>
+<p>  * <code>express</code>, <code>tsx</code>, and <code>dotenv</code> are declared in <code>package.json</code>, but are not referenced in the frontend bundle.</p>
+<h3>Secrets and API Keys Audit</h3>
+<ul><li><b>Client Code (<code>src/</code>):</b> <b>No API keys, access tokens, or hardcoded secrets exist</b> anywhere in <code>src/App.tsx</code>, <code>src/main.tsx</code>, or <code>index.html</code>. The payment modes are purely simulated UI mock states with placeholder test IDs (<code>pooja@okhdfcbank</code>, <code>4532 •••• •••• 8821</code>).</li></ul>
+<ul><li><b><code>.env.example</code>:</b> Contains only non-sensitive local development placeholders (<code>rzp_test_placeholder</code>, <code>test_secret_placeholder</code>, <code>root</code>, <code>sarmelle_db</code>). No production credentials exist.</li></ul>
+<hr/>
+<h2>2. <code>App.tsx</code> Map</h2>
+<p><code>src/App.tsx</code> has 5,770 lines containing the entire frontend application in a single file.</p>
+<h3>Major Sections & Line Ranges</h3>
+<table>
+  <tr><th>Line Range</th><th>Section / Feature</th><th>Description</th></tr>
+  <tr><td><b>L1 – L15</b></td><td>Imports</td><td>React core hooks (<code>useState</code>, <code>useEffect</code>, <code>useRef</code>) and 43 icons from <code>lucide-react</code>.</td></tr>
+  <tr><td><b>L16 – L35</b></td><td><code>Product</code> Interface</td><td>Core product type definition.</td></tr>
+  <tr><td><b>L36 – L374</b></td><td><code>SAMPLE_PRODUCTS</code></td><td>12 mock ethnic products (Sarees, Kurtis, Lehengas) with colors, sizes, prices, and images.</td></tr>
+  <tr><td><b>L375 – L429</b></td><td>TypeScript Interfaces</td><td><code>HeroSlide</code>, <code>PromoBanner</code>, <code>FeaturedBlock</code>, <code>LookbookConfig</code>, <code>ProductReview</code>.</td></tr>
+  <tr><td><b>L430 – L512</b></td><td><code>SAMPLE_REVIEWS</code></td><td>6 mock customer reviews.</td></tr>
+  <tr><td><b>L513 – L557</b></td><td><code>SAMPLE_HERO_SLIDES</code></td><td>3 banner slides with headings, subtitles, and CTA routes.</td></tr>
+  <tr><td><b>L558 – L587</b></td><td><code>SAMPLE_PROMO_BANNERS</code></td><td>2 promotional callout cards.</td></tr>
+  <tr><td><b>L588 – L618</b></td><td><code>SAMPLE_FEATURED_BLOCKS</code></td><td>3 category showcase blocks (Silk Sarees, Festive Kurtis, Royal Lehengas).</td></tr>
+  <tr><td><b>L619 – L626</b></td><td><code>DEFAULT_LOOKBOOK</code></td><td>Lookbook banner configuration object.</td></tr>
+  <tr><td><b>L627 – L668</b></td><td>User Order & Return Interfaces</td><td><code>UserOrderItem</code>, <code>UserOrder</code>, <code>UserReturn</code>.</td></tr>
+  <tr><td><b>L669 – L742</b></td><td><code>SAMPLE_USER_ORDERS</code></td><td>3 realistic user orders with milestone tracking data and items.</td></tr>
+  <tr><td><b>L743 – L780</b></td><td><code>SAMPLE_USER_RETURNS</code></td><td>2 return/exchange requests with refund notes and ARN tracking numbers.</td></tr>
+  <tr><td><b>L781 – L1168</b></td><td><code>App()</code> State & Handlers</td><td>Top-level state declarations (~45 <code>useState</code> hooks), swipe/scroll refs, cart math, filter logic, and coupon handlers.</td></tr>
+  <tr><td><b>L1169 – L1415</b></td><td>Header & Navigation</td><td>Top announcement bar, logo, desktop search, category navigation links, account/wishlist/bag icons.</td></tr>
+  <tr><td><b>L1416 – L1551</b></td><td>Mobile Navigation Drawer</td><td>Slide-out drawer menu with categorized navigation for mobile screens.</td></tr>
+  <tr><td><b>L1552 – L2103</b></td><td><b>View 1: Homepage</b></td><td>Hero slider with swipe/autoplay, promo banners, featured category blocks, tabbed festive shelf, lookbook banner, trust guarantees.</td></tr>
+  <tr><td><b>L2104 – L2628</b></td><td><b>View 2: Collection Catalog</b></td><td>Filter sidebar (Category, Offer, Fabric, Color, Price slider), mobile filter sheet, sort menu, product grid, load-more observer.</td></tr>
+  <tr><td><b>L2629 – L2987</b></td><td><b>View 3: Product Detail (PDP)</b></td><td>Breadcrumb, image zoom/swipe gallery, color swatches, size picker, bag actions, collapsible accordions, reviews teaser.</td></tr>
+  <tr><td><b>L2988 – L3516</b></td><td><b>View 4: Account Dashboard</b></td><td>Profile tab (editable data, password trigger), Orders tab (order cards, tracking trigger, invoice export), Returns tab.</td></tr>
+  <tr><td><b>L3517 – L4010</b></td><td><b>View 5: Admin CMS Dashboard</b></td><td>Admin subtabs: Campaign management (hero/banner/lookbook editor), Product inventory management, Orders manager.</td></tr>
+  <tr><td><b>L4012 – L4207</b></td><td><b>Cart Drawer</b></td><td>Slide-out bag drawer, item quantity increment/decrement, coupon input with quick-pills, subtotal calculation.</td></tr>
+  <tr><td><b>L4208 – L4813</b></td><td><b>Checkout Stepper Modal</b></td><td>4-step checkout: Step 1 (Address), Step 2 (Shipping method), Step 3 (Payment selection), Step 4 (Order receipt & printable invoice).</td></tr>
+  <tr><td><b>L4814 – L4847</b></td><td><b>Wishlist Drawer</b></td><td>Slide-out drawer listing saved items with "Move to Bag" actions.</td></tr>
+  <tr><td><b>L4848 – L5108</b></td><td><b>Auth Modal</b></td><td>Popup with tabbed Login, Register, and Forgot Password forms.</td></tr>
+  <tr><td><b>L5109 – L5183</b></td><td><b>Customer Reviews Modal</b></td><td>Scrollable modal displaying detailed ratings and customer feedback.</td></tr>
+  <tr><td><b>L5184 – L5302</b></td><td><b>Size Chart Modal</b></td><td>Size conversion tables for sarees, kurtis, and measuring instructions.</td></tr>
+  <tr><td><b>L5303 – L5399</b></td><td><b>Live Order Tracking Modal</b></td><td>Visual milestone tracker (Ordered -> Packed -> Shipped -> Out for Delivery -> Delivered).</td></tr>
+  <tr><td><b>L5400 – L5520</b></td><td><b>Change Password Modal</b></td><td>Modal with old password, new password, validation rules, and error prompts.</td></tr>
+  <tr><td><b>L5521 – L5677</b></td><td><b>Return / Exchange Modal</b></td><td>Dialog allowing user to select Exchange vs Refund, reason dropdown, and warehouse shipping address.</td></tr>
+  <tr><td><b>L5678 – L5770</b></td><td><b>Footer</b></td><td>Brand story, quick links, customer care, newsletter, and copyright.</td></tr>
+</table>
+<hr/>
+<h3>Mixed Elements in <code>App.tsx</code></h3>
+<ol><li><b>Types & Interfaces:</b> <code>Product</code>, <code>HeroSlide</code>, <code>PromoBanner</code>, <code>FeaturedBlock</code>, <code>LookbookConfig</code>, <code>ProductReview</code>, <code>UserOrderItem</code>, <code>UserOrder</code>, <code>UserReturn</code> (all declared between L16 and L668).</li></ol>
+<ol><li><b>Constants & Mock Data:</b> <code>SAMPLE_PRODUCTS</code>, <code>SAMPLE_REVIEWS</code>, <code>SAMPLE_HERO_SLIDES</code>, <code>SAMPLE_PROMO_BANNERS</code>, <code>SAMPLE_FEATURED_BLOCKS</code>, <code>DEFAULT_LOOKBOOK</code>, <code>SAMPLE_USER_ORDERS</code>, <code>SAMPLE_USER_RETURNS</code>.</li></ol>
+<ol><li><b>Hardcoded Coupon Rules:</b> Handled in <code>handleApplyCoupon</code> (L981–L995) for <code>DIWALI30</code>, <code>WELCOME10</code>, and <code>FESTIVE500</code>.</li></ol>
+<ol><li><b>Helper Functions & Handlers:</b></li></ol>
+<p>   - Touch/swipe listeners: <code>handleProductTouchStart/Move/End</code> (L877), <code>handleHeroTouchStart/Move/End</code> (L912).</p>
+<p>   - Horizontal shelf scroller: <code>scrollProducts</code> (L939).</p>
+<p>   - Cart actions: <code>addToCart</code> (L1098), <code>updateCartQuantity</code> (L954), <code>removeCartItem</code> (L966).</p>
+<p>   - Coupon handling: <code>handleApplyCoupon</code> (L978), <code>handleRemoveCoupon</code> (L998).</p>
+<p>   - Wishlist toggle: <code>toggleWishlist</code> (L1109).</p>
+<p>   - Filter handling: <code>resetAllFilters</code> (L1089), <code>activeFilterCount</code> (L1133).</p>
+<hr/>
+<h3>Application State Inventory</h3>
+<table>
+  <tr><th>State Name</th><th>Initial / Default Value</th><th>Persistence</th><th>Purpose / Where Used</th></tr>
+  <tr><td><code>currentView</code></td><td><code>'home'</code></td><td><code>sessionStorage</code> (<code>sarmelle_current_view</code>)</td><td>Top-level active page view (<code>home</code>, <code>collection</code>, <code>product</code>, <code>admin</code>, <code>account</code>).</td></tr>
+  <tr><td><code>accountTab</code></td><td><code>'profile'</code></td><td><code>sessionStorage</code> (<code>sarmelle_account_tab</code>)</td><td>Active tab inside the user account dashboard.</td></tr>
+  <tr><td><code>isLoggedIn</code></td><td><code>false</code></td><td><code>sessionStorage</code> (<code>sarmelle_logged_in</code>)</td><td>Authentication status simulation.</td></tr>
+  <tr><td><code>cart</code></td><td><code>[]</code></td><td>Memory</td><td>Array of cart items (product, qty, size, color).</td></tr>
+  <tr><td><code>cartOpen</code></td><td><code>false</code></td><td>Memory</td><td>Controls the right slide-out bag drawer.</td></tr>
+  <tr><td><code>wishlist</code></td><td><code>[SAMPLE_PRODUCTS[1], SAMPLE_PRODUCTS[4]]</code></td><td>Memory</td><td>Array of favorited products.</td></tr>
+  <tr><td><code>wishlistOpen</code></td><td><code>false</code></td><td>Memory</td><td>Controls the right slide-out wishlist drawer.</td></tr>
+  <tr><td><code>couponInput</code>, <code>appliedCoupon</code>, <code>couponError</code></td><td><code>''</code>, <code>null</code>, <code>''</code></td><td>Memory</td><td>Coupon code application and discount calculations.</td></tr>
+  <tr><td><code>isCheckoutOpen</code>, <code>checkoutStep</code></td><td><code>false</code>, <code>1</code></td><td>Memory</td><td>4-step checkout wizard visibility and step index.</td></tr>
+  <tr><td><code>deliveryAddress</code>, <code>shippingMethod</code>, <code>paymentMethod</code>, <code>cardDetails</code></td><td>Default mock values</td><td>Memory</td><td>Form inputs across checkout steps 1–3.</td></tr>
+  <tr><td><code>selectedCategory</code>, <code>selectedOfferType</code>, <code>selectedFabric</code>, <code>selectedColorFilter</code>, <code>maxPrice</code>, <code>sortBy</code></td><td><code>'All'</code>, <code>'All'</code>, <code>'All'</code>, <code>'All'</code>, <code>10000</code>, <code>'Featured'</code></td><td>Memory</td><td>Collection catalog filtering and sorting parameters.</td></tr>
+  <tr><td><code>selectedProduct</code>, <code>selectedProductColor</code>, <code>selectedProductSize</code>, <code>activeProductImageIdx</code></td><td><code>SAMPLE_PRODUCTS[0]</code>, <code>'Maroon'</code>, <code>'Free Size'</code>, <code>0</code></td><td>Memory</td><td>PDP detail display state.</td></tr>
+  <tr><td><code>userProfile</code>, <code>isEditingProfile</code>, <code>editProfileForm</code></td><td>Default Pooja Sharma profile</td><td>Memory</td><td>User profile info and inline edit form.</td></tr>
+  <tr><td><code>userOrders</code>, <code>userReturns</code>, <code>activeTrackingOrder</code>, <code>returnModalItem</code></td><td>Sample orders & returns</td><td>Memory</td><td>Orders history, live order tracking modal, exchange/refund dialog.</td></tr>
+  <tr><td><code>adminTab</code>, <code>productsList</code>, <code>heroSlides</code>, <code>promoBanners</code>, <code>featuredBlocks</code>, <code>lookbookBanner</code></td><td>Sample configs & products</td><td>Memory</td><td>Admin dashboard CMS modifications.</td></tr>
+  <tr><td><code>authModalOpen</code>, <code>authMode</code></td><td><code>false</code>, <code>'login'</code></td><td>Memory</td><td>Login/register modal visibility.</td></tr>
+  <tr><td><code>isReviewsModalOpen</code>, <code>isSizeChartModalOpen</code>, <code>isChangePasswordOpen</code></td><td><code>false</code></td><td>Memory</td><td>Global informational & utility dialogs.</td></tr>
+</table>
+<h3>How Page Navigation Is Done Today</h3>
+<ul><li><b>Mechanism:</b> Single Page Application (SPA) conditional rendering via React state (<code>currentView</code>).</li></ul>
+<ul><li><b>Routing:</b> There is <b>no React Router, no URL pathname routing, and no window hash (<code>#</code>) routing</b>.</li></ul>
+<ul><li><b>Persistence:</b> A single key <code>sarmelle_current_view</code> in <code>sessionStorage</code> restores the last opened screen on page refresh.</li></ul>
+<hr/>
+<h2>3. Proposed Split Plan</h2>
+<p>To keep the application modular, maintainable, and prepared for future PHP/MySQL API integration without altering styling or behavior, we will organize the codebase cleanly into distinct folders:</p>
+<h3>Proposed Folder Structure</h3>
+<pre><code>src/
+├── types/                     # TypeScript interfaces and shared types
+│   ├── product.ts
+│   ├── order.ts
+│   └── campaign.ts
+├── data/                      # Mock data (ready to be swapped for API endpoints)
+│   ├── products.ts
+│   ├── reviews.ts
+│   ├── campaign.ts
+│   ├── orders.ts
+│   └── coupons.ts
+├── context/                   # Shared global application states
+│   ├── NavigationContext.tsx  # currentView, accountTab, modals
+│   ├── CartContext.tsx        # cart, wishlist, coupon, price math
+│   └── AuthContext.tsx        # userProfile, isLoggedIn, orders, returns
+├── components/
+│   ├── common/                # Reusable UI elements (Header, Footer, Announcements)
+│   │   ├── Header.tsx
+│   │   ├── MobileNav.tsx
+│   │   └── Footer.tsx
+│   ├── modals/                # Overlays and dialogs
+│   │   ├── CartDrawer.tsx
+│   │   ├── WishlistDrawer.tsx
+│   │   ├── CheckoutModal.tsx
+│   │   ├── AuthModal.tsx
+│   │   ├── ReviewsModal.tsx
+│   │   ├── SizeChartModal.tsx
+│   │   ├── OrderTrackingModal.tsx
+│   │   ├── ChangePasswordModal.tsx
+│   │   └── ReturnModal.tsx
+│   └── views/                 # Full screen page views
+│       ├── HomeView.tsx
+│       ├── CollectionView.tsx
+│       ├── ProductDetailView.tsx
+│       ├── AccountView.tsx
+│       └── AdminView.tsx
+├── App.tsx                    # Clean orchestrator rendering Header, active View, Modals, Footer
+├── main.tsx
+└── index.css</code></pre>
+<hr/>
+<h3>What Moves Where</h3>
+<h4>1. <code>src/types/</code></h4>
+<ul><li><code>product.ts</code>: <code>Product</code>, <code>ProductReview</code>.</li></ul>
+<ul><li><code>campaign.ts</code>: <code>HeroSlide</code>, <code>PromoBanner</code>, <code>FeaturedBlock</code>, <code>LookbookConfig</code>.</li></ul>
+<ul><li><code>order.ts</code>: <code>UserOrderItem</code>, <code>UserOrder</code>, <code>UserReturn</code>.</li></ul>
+<h4>2. <code>src/data/</code></h4>
+<ul><li><code>products.ts</code>: <code>SAMPLE_PRODUCTS</code>.</li></ul>
+<ul><li><code>reviews.ts</code>: <code>SAMPLE_REVIEWS</code>.</li></ul>
+<ul><li><code>campaign.ts</code>: <code>SAMPLE_HERO_SLIDES</code>, <code>SAMPLE_PROMO_BANNERS</code>, <code>SAMPLE_FEATURED_BLOCKS</code>, <code>DEFAULT_LOOKBOOK</code>.</li></ul>
+<ul><li><code>orders.ts</code>: <code>SAMPLE_USER_ORDERS</code>, <code>SAMPLE_USER_RETURNS</code>.</li></ul>
+<ul><li><code>coupons.ts</code>: Available promo coupon definitions (<code>DIWALI30</code>, <code>WELCOME10</code>, <code>FESTIVE500</code>).</li></ul>
+<h4>3. State Strategy: Context vs Local</h4>
+<ul><li><b>Shared in Context:</b></li></ul>
+<p>  * <code>CartContext</code>: <code>cart</code>, <code>cartOpen</code>, <code>wishlist</code>, <code>wishlistOpen</code>, <code>coupon</code>, cart calculations (<code>subtotal</code>, <code>discount</code>, <code>shipping</code>, <code>total</code>), cart mutation handlers (<code>addToCart</code>, <code>updateCartQuantity</code>, <code>removeCartItem</code>, <code>toggleWishlist</code>).</p>
+<p>  * <code>AuthContext</code>: <code>isLoggedIn</code>, <code>userProfile</code>, <code>userOrders</code>, <code>userReturns</code>, active order tracking, return modal state.</p>
+<p>  * <code>NavigationContext</code>: <code>currentView</code>, <code>setCurrentView</code>, <code>selectedProduct</code> (active PDP item), navigation filters.</p>
+<ul><li><b>Kept Local to Components:</b></li></ul>
+<p>  * Homepage: <code>currentHeroSlide</code>, <code>isHeroHovered</code>, carousel swipe refs, <code>activeProductTab</code>.</p>
+<p>  * Collection: Catalog filter inputs (<code>selectedFabric</code>, <code>selectedColorFilter</code>, <code>maxPrice</code>, <code>sortBy</code>, <code>visibleProductsCount</code>).</p>
+<p>  * Product Detail: <code>selectedProductColor</code>, <code>selectedProductSize</code>, <code>activeProductImageIdx</code>, accordion open/close.</p>
+<p>  * Checkout Modal: <code>checkoutStep</code>, <code>deliveryAddress</code>, <code>paymentMethod</code>, form validation states.</p>
+<p>  * Admin View: Admin tabs and local CMS form buffers.</p>
+<hr/>
+<h3>Safe Order of Extraction (Incremental Small Steps)</h3>
+<p>Each step is self-contained and allows running <code>npm run build</code> immediately to guarantee zero syntax or typing regressions before moving to the next.</p>
+<ol><li><b>Step 1 — Types Extraction:</b> Create <code>src/types/</code> and extract all interfaces from lines 16–429 & 627–668. Import them back into <code>App.tsx</code>.</li></ol>
+<ol><li><b>Step 2 — Mock Data Extraction:</b> Create <code>src/data/</code> and extract static sample arrays/objects from lines 36–780. Import them into <code>App.tsx</code>.</li></ol>
+<ol><li><b>Step 3 — Global Modals Extraction:</b> Extract standalone modals that have minimal coupling into <code>src/components/modals/</code>:</li></ol>
+<p>   * <code>SizeChartModal.tsx</code></p>
+<p>   * <code>ReviewsModal.tsx</code></p>
+<p>   * <code>ChangePasswordModal.tsx</code></p>
+<ol><li><b>Step 4 — Context Setup:</b> Introduce <code>CartContext.tsx</code> and <code>AuthContext.tsx</code> to cleanly wrap the app, eliminating prop-drilling.</li></ol>
+<ol><li><b>Step 5 — Heavy Modals & Drawers Extraction:</b></li></ol>
+<p>   * <code>CartDrawer.tsx</code></p>
+<p>   * <code>WishlistDrawer.tsx</code></p>
+<p>   * <code>AuthModal.tsx</code></p>
+<p>   * <code>OrderTrackingModal.tsx</code></p>
+<p>   * <code>ReturnModal.tsx</code></p>
+<p>   * <code>CheckoutModal.tsx</code></p>
+<ol><li><b>Step 6 — Layout Components:</b> Extract <code>Header.tsx</code>, <code>MobileNav.tsx</code>, and <code>Footer.tsx</code> into <code>src/components/common/</code>.</li></ol>
+<ol><li><b>Step 7 — Page Views Extraction:</b></li></ol>
+<p>   * <code>HomeView.tsx</code> (L1552–L2103)</p>
+<p>   * <code>CollectionView.tsx</code> (L2104–L2628)</p>
+<p>   * <code>ProductDetailView.tsx</code> (L2629–L2987)</p>
+<p>   * <code>AccountView.tsx</code> (L2988–L3516)</p>
+<p>   * <code>AdminView.tsx</code> (L3517–L4010)</p>
+<ol><li><b>Step 8 — Final App Assembly:</b> Reduce <code>App.tsx</code> down to a clean ~60-line top-level provider & view router.</li></ol>
+<hr/>
+<h2>4. Regression Safety</h2>
+<h3>Screen & Feature Testing Checklist</h3>
+<p>Before and after each extraction step, verify every user path:</p>
+<ul><li>[ ] <b>Homepage:</b></li></ul>
+<p>  * Hero auto-slides every 5.5s; manual next/previous arrows and swipe work.</p>
+<p>  * Promo banner clicks properly route to the collection with corresponding filters.</p>
+<p>  * Category tabs ("New Arrivals", "Best Sellers", "Festive Collection") toggle products.</p>
+<p>  * Horizontal scroll arrows move product shelf left/right.</p>
+<ul><li>[ ] <b>Collection & Filters:</b></li></ul>
+<p>  * Category filters (Sarees, Kurtis, Lehengas, Dupattas) update the product grid count.</p>
+<p>  * Price slider filters products dynamically.</p>
+<p>  * Color and Fabric checkboxes filter correctly.</p>
+<p>  * "Clear All" restores full catalog list.</p>
+<p>  * Sort dropdown (Price Low to High, Customer Rating, etc.) reorders items.</p>
+<ul><li>[ ] <b>Product Detail Page (PDP):</b></li></ul>
+<p>  * Clicking any product card opens the correct product details.</p>
+<p>  * Thumbnail clicks and mobile swipe switch the main picture.</p>
+<p>  * Color swatches and Size buttons reflect active selection.</p>
+<p>  * "Size Chart" modal opens and displays measurement table.</p>
+<p>  * "Add to Bag" updates bag item counter badge in header and opens bag drawer.</p>
+<ul><li>[ ] <b>Cart & Coupons:</b></li></ul>
+<p>  * Quantity increment (<code>+</code>) and decrement (<code>-</code>) recalculate subtotals.</p>
+<p>  * Item removal removes item from bag.</p>
+<p>  * Quick-apply coupon pill or typing <code>DIWALI30</code> applies 30% discount; <code>FESTIVE500</code> applies ₹500 flat discount.</p>
+<p>  * Free shipping threshold banner updates accurately.</p>
+<ul><li>[ ] <b>Checkout Wizard:</b></li></ul>
+<p>  * Stepper transitions: Step 1 (Address) -> Step 2 (Delivery speed) -> Step 3 (Payment mode) -> Step 4 (Confirmation).</p>
+<p>  * Payment mode selector (UPI, Card, NetBanking, COD) reveals respective inputs.</p>
+<p>  * Completing order generates order ID and downloadable text invoice.</p>
+<ul><li>[ ] <b>Account Dashboard:</b></li></ul>
+<p>  * Switch between Profile, Orders, and Returns tabs.</p>
+<p>  * "Edit Profile" saves updated details in state.</p>
+<p>  * "Track Order" opens timeline modal.</p>
+<p>  * "Initiate Return / Exchange" opens modal with reason selector.</p>
+<ul><li>[ ] <b>Admin Dashboard:</b></li></ul>
+<p>  * Access admin via footer/header admin link.</p>
+<p>  * Edit hero slide title or product stock toggle; changes reflect in frontend state.</p>
+<h3>Visual Comparison Method</h3>
+<ol><li>Take baseline full-page screenshots of each screen (<code>home</code>, <code>collection</code>, <code>product</code>, <code>account</code>, <code>admin</code>, plus cart drawer and checkout modal) using browser devtools or standard screenshot capture.</li></ol>
+<ol><li>After file extractions, take screenshots under identical viewport widths (1440px desktop and 390px mobile).</li></ol>
+<ol><li>Compare side-by-side or overlay to confirm 0-pixel layout shifts.</li></ol>
+<hr/>
+<h2>5. Risks and Unknowns</h2>
+<ol><li><b>Missing Lockfile (<code>package-lock.json</code>):</b></li></ol>
+<p>   <i> </i>Risk:* Running <code>npm install</code> without a lockfile could install newer patch/minor releases of packages (e.g. Tailwind v4 or React 19 sub-dependencies) that could introduce unintended deprecations.</p>
+<p>   <i> </i>Mitigation:* We should run <code>npm install</code>, verify package versions, and commit the generated <code>package-lock.json</code> once approved.</p>
+<ol><li><b>Vite Base Path for Apache Hosting:</b></li></ol>
+<p>   <i> </i>Risk:* The default <code>base: '/'</code> in <code>vite.config.ts</code> will break asset loading if hosted under a subdirectory in Apache.</p>
+<p>   <i> </i>Mitigation:* Add <code>base: './'</code> to <code>vite.config.ts</code> during the build configuration step.</p>
+<ol><li><b>SessionStorage Desynchronization:</b></li></ol>
+<p>   <i> </i>Risk:* If navigation state is split across multiple contexts without keeping the <code>sessionStorage</code> synchronization listeners, browser page reloads could revert to the homepage unexpectedly.</p>
+<p>   <i> </i>Mitigation:* Centralize <code>sessionStorage</code> persistence in <code>NavigationContext</code>.</p>
+<ol><li><b>Tailwind v4 CSS Scanning:</b></li></ol>
+<p>   <i> </i>Risk:<i> Tailwind v4 uses dynamic file scanning. Moving JSX components to newly created subfolders (<code>src/components/</code>, <code>src/pages/</code>) must ensure that Tailwind still scans all files inside <code>src/</i><i>/</i>.{ts,tsx}</code>.</p>
+<p>   <i> </i>Mitigation:* Verify styles remain active after extracting the first component.</p>
+</body></html>

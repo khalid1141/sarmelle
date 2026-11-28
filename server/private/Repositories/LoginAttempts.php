@@ -5,6 +5,7 @@ namespace Sarmelle\Repositories;
 
 use PDO;
 use Sarmelle\Core\Clock;
+use Sarmelle\Core\DatabaseException;
 
 /**
  * login_attempts repository. Prepared statements only; the identifier is
@@ -37,9 +38,12 @@ final class LoginAttempts
             'INSERT INTO login_attempts (account_type, identifier, ip, is_success)'
             . ' VALUES (?, ?, ?, ?)'
         );
-        $statement->execute([$accountType, $identifier, $ip, $success ? 1 : 0]);
-
-        return (int) $this->pdo->lastInsertId();
+        try {
+            $statement->execute([$accountType, $identifier, $ip, $success ? 1 : 0]);
+            return (int) $this->pdo->lastInsertId();
+        } catch (\PDOException $e) {
+            throw DatabaseException::fromPdo($e);
+        }
     }
 
     public function countIdentifierFailures(
@@ -55,9 +59,12 @@ final class LoginAttempts
             'SELECT COUNT(*) FROM login_attempts'
             . ' WHERE account_type = ? AND identifier = ? AND is_success = 0 AND created_at >= ?'
         );
-        $statement->execute([$accountType, $identifier, self::cutoff($windowMinutes)]);
-
-        return (int) $statement->fetchColumn();
+        try {
+            $statement->execute([$accountType, $identifier, self::cutoff($windowMinutes)]);
+            return (int) $statement->fetchColumn();
+        } catch (\PDOException $e) {
+            throw DatabaseException::fromPdo($e);
+        }
     }
 
     public function countIpFailures(?string $ip, int $windowMinutes): int
@@ -73,9 +80,12 @@ final class LoginAttempts
             'SELECT COUNT(*) FROM login_attempts'
             . ' WHERE ip = ? AND is_success = 0 AND created_at >= ?'
         );
-        $statement->execute([$ip, self::cutoff($windowMinutes)]);
-
-        return (int) $statement->fetchColumn();
+        try {
+            $statement->execute([$ip, self::cutoff($windowMinutes)]);
+            return (int) $statement->fetchColumn();
+        } catch (\PDOException $e) {
+            throw DatabaseException::fromPdo($e);
+        }
     }
 
     private static function cutoff(int $windowMinutes): string

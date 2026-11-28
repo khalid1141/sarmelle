@@ -329,42 +329,12 @@ final class AdminAuth
             return null;
         }
 
-        $session = $this->sessions->findByTokenHash(hash('sha256', $token));
-
-        if ($session === null) {
+        $resolveResult = $this->sessions->resolve($token);
+        if ($resolveResult['status'] !== 'valid' || $resolveResult['session'] === null) {
             return null;
         }
 
-        // expiry checks
-        $now = time();
-        $expires = strtotime((string) $session['expires_at']);
-
-        if ($expires === false || $expires <= $now) {
-            $this->sessions->deleteByTokenHash(hash('sha256', $token));
-
-            return null;
-        }
-
-        // absolute timeout from created_at
-        $absoluteHours = (int) $this->config->int('ADMIN_SESSION_ABSOLUTE_HOURS');
-        $created = strtotime((string) $session['created_at']);
-
-        if ($created === false || $created + ($absoluteHours * 3600) <= $now) {
-            $this->sessions->deleteByTokenHash(hash('sha256', $token));
-
-            return null;
-        }
-
-        // slide expiry (at most once per 5 min not tracked precisely; slide always for simplicity)
-        $idle = (int) $this->config->int('ADMIN_SESSION_IDLE_MINUTES');
-        $newExpires = Clock::now()->modify('+' . $idle . ' minutes')->format('Y-m-d H:i:s');
-        // don't exceed absolute
-        $absExpires = $created + ($absoluteHours * 3600);
-        if (strtotime($newExpires) > $absExpires) {
-            $newExpires = date('Y-m-d H:i:s', $absExpires);
-        }
-
-        $this->sessions->slideExpiry((int) $session['id'], $newExpires);
+        $session = $resolveResult['session'];
 
         $admin = $this->adminUsers->sole();
 

@@ -16,6 +16,7 @@ use Sarmelle\Auth\Policy;
 use Sarmelle\Auth\Throttle;
 use Sarmelle\Core\Clock;
 use Sarmelle\Core\DatabaseException;
+use Sarmelle\Repositories\AdminSessions;
 use Sarmelle\Repositories\LoginAttempts;
 use Sarmelle\Support\ActivityLog;
 
@@ -104,6 +105,7 @@ $ips = ['192.0.2.11', '192.0.2.12', '192.0.2.13', '192.0.2.14', '192.0.2.15', '1
 $cleanup = static function (\PDO $pdo) use ($prefix): void {
     $statement = $pdo->prepare('DELETE FROM login_attempts WHERE identifier LIKE ?');
     $statement->execute([$prefix . '-%@invalid.test']);
+    $pdo->prepare("DELETE FROM admin_sessions WHERE ip LIKE '192.0.2.%'")->execute();
 };
 
 /**
@@ -269,6 +271,29 @@ try {
         $test->true(is_array($row), 'inserted row was not found');
         $test->same($typed, $row['identifier']);
         $test->same(null, $row['ip']);
+    });
+
+    $test->run('account-type isolation: admin failures do not lock the customer account for the same identifier', function () use ($test, $attempts, $throttle, $identifier): void {
+        // Build up 5 admin failures for a shared identifier — enough to lock the admin type.
+        $shared = $identifier('shared-isolation@invalid.test');
+        for ($i = 0; $i < Policy::LOGIN_FAILURES_PER_IDENTIFIER; $i++) {
+            $attempts->record('admin', $shared, null, false);
+        }
+
+        // Admin type must now be locked.
+        $test->true(
+            $throttle->isIdentifierLocked('admin', $shared),
+            'admin should be locked after ' . Policy::LOGIN_FAILURES_PER_IDENTIFIER . ' failures'
+        );
+
+        // Customer type with the exact same identifier string must remain unlocked.
+        $customerCount = $attempts->countIdentifierFailures('customer', $shared, Policy::LOGIN_WINDOW_MINUTES);
+        $test->same(0, $customerCount, 'customer failure count should be zero when only admin failures exist');
+        $test->true(
+            !$throttle->isIdentifierLocked('customer', $shared),
+            'customer should not be locked by admin failures'
+        );
+        $test->same(null, $throttle->check('customer', $shared, null), 'check() should allow the customer attempt');
     });
 
     // --- Slice 6: admin setup, recovery and activity log ----------------------
@@ -501,6 +526,112 @@ try {
                 !str_contains($caught->getMessage(), 'admin.selftest'),
                 'a SQL parameter leaked into the exception message'
             );
+        });
+
+        $adminSessions = new AdminSessions($pdo);
+
+        $test->run('admin sessions: plaintext token is never stored and hash resolves correctly', function () use ($test, $adminSessions, $pdo, $adminUserId): void {
+            $created = $adminSessions->createWithRawToken($adminUserId, '192.0.2.20', 'SelftestUA/1.0');
+            $rawToken = $created['token'];
+            $tokenHash = $created['token_hash'];
+
+            $test->same(64, strlen($rawToken), 'raw session token must be 32 bytes hex (64 chars)');
+            $test->same(hash('sha256', $rawToken), $tokenHash);
+
+            $checkHash = $pdo->prepare('SELECT COUNT(*) FROM admin_sessions WHERE session_token_hash = ?');
+            $checkHash->execute([$tokenHash]);
+            $test->same(1, (int) $checkHash->fetchColumn());
+
+            $checkPlain = $pdo->prepare('SELECT COUNT(*) FROM admin_sessions WHERE session_token_hash = ?');
+            $checkPlain->execute([$rawToken]);
+            $test->same(0, (int) $checkPlain->fetchColumn(), 'plaintext token leaked into session_token_hash');
+
+            $resolved = $adminSessions->resolve($rawToken);
+            $test->same('valid', $resolved['status']);
+            $test->true(is_array($resolved['session']), 'session is not an array');
+            $test->same($adminUserId, $resolved['session']['admin_user_id']);
+        });
+
+        $test->run('admin sessions: tampered or unknown token fails resolution', function () use ($test, $adminSessions, $adminUserId): void {
+            $created = $adminSessions->createWithRawToken($adminUserId, '192.0.2.21', 'SelftestUA/1.0');
+            $rawToken = $created['token'];
+
+            $tampered = $adminSessions->resolve($rawToken . 'x');
+            $test->same('invalid', $tampered['status']);
+            $test->same(null, $tampered['session']);
+
+            $unknown = $adminSessions->resolve(str_repeat('0', 64));
+            $test->same('invalid', $unknown['status']);
+            $test->same(null, $unknown['session']);
+
+            $empty = $adminSessions->resolve('');
+            $test->same('invalid', $empty['status']);
+            $test->same(null, $empty['session']);
+        });
+
+        $test->run('admin sessions: idle timeout (30m) deletes expired session', function () use ($test, $adminSessions, $pdo, $adminUserId): void {
+            $rawToken = bin2hex(random_bytes(32));
+            $tokenHash = hash('sha256', $rawToken);
+            $expiredTime = Clock::now()->modify('-1 minute')->format('Y-m-d H:i:s');
+            $stmt = $pdo->prepare("INSERT INTO admin_sessions (admin_user_id, session_token_hash, expires_at, ip, user_agent) VALUES (?, ?, ?, '192.0.2.22', 'Selftest')");
+            $stmt->execute([$adminUserId, $tokenHash, $expiredTime]);
+
+            $result = $adminSessions->resolve($rawToken);
+            $test->same('session_expired', $result['status']);
+            $test->same(null, $result['session']);
+
+            $check = $pdo->prepare('SELECT COUNT(*) FROM admin_sessions WHERE session_token_hash = ?');
+            $check->execute([$tokenHash]);
+            $test->same(0, (int) $check->fetchColumn(), 'expired session was not deleted');
+        });
+
+        $test->run('admin sessions: 12-hour absolute cap expires even if actively refreshed', function () use ($test, $adminSessions, $pdo, $adminUserId): void {
+            $rawToken = bin2hex(random_bytes(32));
+            $tokenHash = hash('sha256', $rawToken);
+            $oldCreated = Clock::now()->modify('-13 hours')->format('Y-m-d H:i:s');
+            $freshExpiry = Clock::now()->modify('+20 minutes')->format('Y-m-d H:i:s');
+            $stmt = $pdo->prepare("INSERT INTO admin_sessions (admin_user_id, session_token_hash, expires_at, ip, user_agent, created_at) VALUES (?, ?, ?, '192.0.2.23', 'Selftest', ?)");
+            $stmt->execute([$adminUserId, $tokenHash, $freshExpiry, $oldCreated]);
+
+            $result = $adminSessions->resolve($rawToken);
+            $test->same('session_expired', $result['status']);
+            $test->same(null, $result['session']);
+
+            $check = $pdo->prepare('SELECT COUNT(*) FROM admin_sessions WHERE session_token_hash = ?');
+            $check->execute([$tokenHash]);
+            $test->same(0, (int) $check->fetchColumn(), 'session exceeding 12h absolute cap was not deleted');
+        });
+
+        $test->run('admin sessions: sliding refresh stops at the 12-hour absolute cap', function () use ($test, $adminSessions, $pdo, $adminUserId): void {
+            $rawToken = bin2hex(random_bytes(32));
+            $tokenHash = hash('sha256', $rawToken);
+            $createdTime = Clock::now()->modify('-710 minutes');
+            $initialExpiry = Clock::now()->modify('+5 minutes')->format('Y-m-d H:i:s');
+            $stmt = $pdo->prepare("INSERT INTO admin_sessions (admin_user_id, session_token_hash, expires_at, ip, user_agent, created_at) VALUES (?, ?, ?, '192.0.2.24', 'Selftest', ?)");
+            $stmt->execute([$adminUserId, $tokenHash, $initialExpiry, $createdTime->format('Y-m-d H:i:s')]);
+
+            $result = $adminSessions->resolve($rawToken);
+            $test->same('valid', $result['status']);
+
+            $expectedCap = $createdTime->modify('+12 hours')->format('Y-m-d H:i:s');
+            $test->same($expectedCap, $result['session']['expires_at'], 'sliding refresh exceeded the 12h absolute cap');
+        });
+
+        $test->run('admin sessions: revocation by token and bulk revocation for admin', function () use ($test, $adminSessions, $adminUserId): void {
+            $s1 = $adminSessions->createWithRawToken($adminUserId, '192.0.2.25', 'Selftest');
+            $s2 = $adminSessions->createWithRawToken($adminUserId, '192.0.2.26', 'Selftest');
+
+            $adminSessions->deleteByTokenHash($s1['token_hash']);
+            $res1 = $adminSessions->resolve($s1['token']);
+            $test->same('invalid', $res1['status']);
+
+            $res2 = $adminSessions->resolve($s2['token']);
+            $test->same('valid', $res2['status']);
+
+            $deletedCount = $adminSessions->deleteAllForAdmin($adminUserId);
+            $test->true($deletedCount >= 1, 'no sessions were deleted');
+            $res2After = $adminSessions->resolve($s2['token']);
+            $test->same('invalid', $res2After['status']);
         });
     } finally {
         if ($pdo->inTransaction()) {
