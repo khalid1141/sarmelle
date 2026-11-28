@@ -19,3 +19,10 @@ server/private/var/*
 !server/private/var/.gitignore
 server/private/vendor/
 *.eml
+
+# AI & Code Intelligence (never commit to public repo)
+.gitnexus/
+.claude/
+AGENTS.md
+CLAUDE.md
+
